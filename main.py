@@ -10,6 +10,7 @@ from fpdf import FPDF
 from gtts import gTTS
 import replicate
 import pandas as pd
+import base64
 from streamlit_option_menu import option_menu
 
 # --------------------------
