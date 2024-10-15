@@ -31,4 +31,3 @@ streamlit-editorjs
 streamlit-aggrid
 altair
 numpy
-base64
