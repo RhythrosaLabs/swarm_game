@@ -7,8 +7,6 @@ from io import BytesIO
 from PIL import Image, ImageOps
 import base64
 import numpy as np
-import threading
-import torch
 
 # Set page configuration
 st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
@@ -213,19 +211,18 @@ def encode_image(image_data):
     return base64.b64encode(image_data).decode('utf-8')
 
 def describe_image(api_key, image_data):
-    # Using OpenAI GPT-4 with image analysis capabilities
     headers = get_headers('openai')
-    files = {
-        'file': ('image.png', image_data, 'application/octet-stream')
-    }
     data = {
         "model": "gpt-4-vision",
         "messages": [
             {"role": "user", "content": "Describe the content of this image."}
         ]
     }
+    files = {
+        'file': ('image.png', image_data, 'application/octet-stream')
+    }
     try:
-        response = requests.post(CHAT_API_URL, headers=headers, files=files, data={'data': json.dumps(data)})
+        response = requests.post(CHAT_API_URL, headers=headers, data={'data': json.dumps(data)}, files=files)
         if response.status_code == 200 and 'choices' in response.json():
             description = response.json()['choices'][0]['message']['content']
             return description
@@ -309,7 +306,7 @@ def generate_file_with_gpt(prompt):
         return None, None
 
 def analyze_and_store_file(file_name, file_data):
-    if file_name.lower().endswith('.txt') or file_name.lower().endswith('.py') or file_name.lower().endswith('.html') or file_name.lower().endswith('.md'):
+    if file_name.lower().endswith(('.txt', '.py', '.html', '.md')):
         content = file_data.decode('utf-8')
         analyzed_content = enhance_content(content, file_name)
         add_to_chat_knowledge_base(file_name, analyzed_content)
@@ -451,11 +448,11 @@ def sidebar():
             st.header("💬 Chat Assistant")
             # Model selection
             st.subheader("Model Selection")
-            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo", "gpt-4-32k", "llama"])
-            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion", "flux"])
+            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo"])
+            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion"])
             st.session_state['selected_video_model'] = st.selectbox("Video Model", ["luma-ai", "stable-diffusion"])
             st.session_state['selected_music_model'] = st.selectbox("Music Model", ["meta-musicgen"])
-            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo", "llama"])
+            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
 
             # Chat functionality in sidebar
             use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
@@ -557,6 +554,14 @@ def chat_with_gpt(prompt, uploaded_files):
         st.error(f"Error in chat: {e}")
         return "I'm sorry, I couldn't process your request."
 
+# Load preset bots
+def load_preset_bots():
+    if os.path.exists('presetBots.json'):
+        with open('presetBots.json') as f:
+            return json.load(f)
+    else:
+        return {}
+
 # Main Tabs
 def main_tabs():
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -599,7 +604,7 @@ def main_tabs():
                     if isinstance(image_url_or_data, bytes):
                         image_data = image_url_or_data
                     else:
-                        image_data = download_image(image_url_or_data)
+                        image_data = requests.get(image_url_or_data).content
                     if image_data:
                         st.session_state.generated_images.append(image_data)
                         display_image(image_data, "Generated Image")
@@ -702,7 +707,7 @@ def generate_marketing_campaign(prompt):
             if isinstance(image_data, bytes):
                 images[f"{key}.png"] = image_data
             else:
-                image_content = download_image(image_data)
+                image_content = requests.get(image_data).content
                 if image_content:
                     images[f"{key}.png"] = image_content
             add_file_to_global_storage(f"{key}.png", images[f"{key}.png"])
@@ -755,14 +760,6 @@ def create_zip(content_dict):
                         zip_file.writestr(f"{key}/{sub_key}", sub_value)
     zip_buffer.seek(0)
     return zip_buffer
-
-# Load preset bots
-def load_preset_bots():
-    if os.path.exists('presetBots.json'):
-        with open('presetBots.json') as f:
-            return json.load(f)
-    else:
-        return {}
 
 # Main function
 def main():
