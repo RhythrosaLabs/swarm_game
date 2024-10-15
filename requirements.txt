@@ -31,3 +31,4 @@ streamlit-quill
 streamlit-editorjs
 streamlit-aggrid
 altair
+numpy
