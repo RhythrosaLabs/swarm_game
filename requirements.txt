@@ -8,12 +8,11 @@ gtts
 streamlit-option-menu
 fpdf
 
-lumaai
 moviepy
 openai
 opencv-python
 runwayml
-httpx
+httpx==0.16.1  # Fixed version to satisfy postgrest-py
 
 flask
 midiutil
@@ -29,7 +28,7 @@ dash-bootstrap-components
 PyPDF2
 pytesseract
 pyttsx3
-supabase-py
+# supabase-py removed due to dependency conflict
 opencv-python-headless
 pedalboard
 python-docx
