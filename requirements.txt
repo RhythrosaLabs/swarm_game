@@ -12,7 +12,7 @@ moviepy
 openai
 opencv-python
 runwayml
-httpx
+lumaai
 
 flask
 midiutil
