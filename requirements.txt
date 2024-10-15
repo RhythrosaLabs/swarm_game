@@ -14,7 +14,6 @@ dash-core-components
 dash-html-components
 dash-bootstrap-components
 fpdf
-PyPDF2
 pytesseract
 pyttsx3
 supabase-py
