@@ -14,15 +14,48 @@ import re
 st.set_page_config(page_title="Business Plan Automation", layout="wide")
 
 # Custom CSS for enhanced UI
-def local_css(file_name):
+def load_custom_css():
     """
-    Loads local CSS file to style the Streamlit app.
+    Loads custom CSS to style the Streamlit app.
     """
-    with open(file_name) as f:
-        st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    custom_css = """
+    /* Sidebar Styling */
+    .css-1aumxhk {
+        background-color: #2E8B57;
+    }
 
-# Uncomment the line below and create a 'styles.css' file for custom styles
-# local_css("styles.css")
+    /* Header Styling */
+    .css-1aumxhk h1 {
+        color: white;
+        text-align: center;
+    }
+
+    /* Button Styling */
+    .css-1emrehy.edgvbvh3 {
+        background-color: #4CAF50;
+        color: white;
+    }
+
+    /* Progress Bar Styling */
+    .css-1d391kg.egzxvld0 {
+        background-color: #2E8B57;
+    }
+
+    /* Footer Styling */
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: #2E8B57;
+        color: white;
+        text-align: center;
+        padding: 10px;
+    }
+    """
+    st.markdown(f'<style>{custom_css}</style>', unsafe_allow_html=True)
+
+load_custom_css()
 
 # ============================================
 #              HELPER FUNCTIONS
@@ -153,6 +186,8 @@ def create_zip(business_plan, images):
                     zip_file.writestr(f"{img_name}.png", img_buffer.getvalue())
                 except:
                     pass  # Skip if there's an error
+            else:
+                pass  # Skip if not a valid URL
     return zip_buffer
 
 # ============================================
@@ -166,10 +201,42 @@ def main():
     # Initialize session state for customization
     if 'customization' not in st.session_state:
         st.session_state.customization = {
-            'image_types': ['Logo Generation', 'Chart Generation'],
             'chat_model': 'gpt-4',
             'image_model': 'Logo Generation',
         }
+    
+    # Sidebar for API Keys and Settings
+    with st.sidebar:
+        st.header("🔑 API Keys")
+        
+        st.markdown("**Enter your API keys below.**")
+        
+        openai_api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
+        replicate_api_key = st.text_input("Replicate API Key", type="password", placeholder="r8_...")
+        
+        if st.button("Submit API Keys"):
+            if openai_api_key and replicate_api_key:
+                st.session_state['openai_api_key'] = openai_api_key
+                st.session_state['replicate_api_key'] = replicate_api_key
+                st.success("API Keys submitted successfully!")
+            else:
+                st.error("Please enter both OpenAI and Replicate API keys.")
+        
+        st.markdown("---")
+        st.header("⚙️ Settings")
+        
+        # Model Selection
+        st.subheader("AI Model Selection")
+        st.session_state.customization['chat_model'] = st.selectbox(
+            "Select Chat Model",
+            options=['gpt-4', 'gpt-3.5-turbo'],
+            index=0
+        )
+        st.session_state.customization['image_model'] = st.selectbox(
+            "Select Image Generation Model",
+            options=['Logo Generation'],  # Extend options as needed
+            index=0
+        )
     
     # Set API keys
     if 'openai_api_key' in st.session_state and 'replicate_api_key' in st.session_state:
@@ -311,7 +378,7 @@ def main():
     # ============================================
     #        DOWNLOAD BUSINESS PLAN AS ZIP
     # ============================================
-
+    
     st.markdown('<h2 style="text-align: center; color: #2E8B57;">📥 Download Your Business Plan</h2>', unsafe_allow_html=True)
     if st.button("Download Business Plan as ZIP"):
         if business_plan or images:
@@ -331,10 +398,9 @@ def main():
     # ============================================
     #                   FOOTER
     # ============================================
-
-    st.markdown("---")
+    
     st.markdown("""
-        <div style="text-align: center;">
+        <div class="footer">
             <p>Created by [Your Name](https://yourwebsite.com) | 
             [GitHub](https://github.com/yourusername) | 
             [LinkedIn](https://linkedin.com/in/yourusername)</p>
