@@ -695,6 +695,34 @@ def delete_all_files():
 # --------------------------
 def sidebar_menu():
     """Configure the sidebar with four tabs: Keys, Models, About, Chat."""
+    
+    # Ensure session state keys are initialized before using them
+    if 'api_keys' not in st.session_state:
+        st.session_state.api_keys = {
+            'openai': '',
+            'replicate': '',
+            'stability': '',
+            'luma': '',
+            'runway': '',
+            'clipdrop': ''
+        }
+    
+    if 'selected_code_model' not in st.session_state:
+        st.session_state['selected_code_model'] = 'gpt-4o'
+    
+    if 'selected_image_model' not in st.session_state:
+        st.session_state['selected_image_model'] = 'dalle3'
+    
+    if 'selected_video_model' not in st.session_state:
+        st.session_state['selected_video_model'] = 'stable diffusion'
+    
+    if 'selected_audio_model' not in st.session_state:
+        st.session_state['selected_audio_model'] = 'music gen'
+    
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = []
+
+    # Sidebar layout
     with st.sidebar:
         selected = option_menu(
             menu_title="Main Menu",
@@ -759,7 +787,7 @@ def sidebar_menu():
             st.session_state['selected_code_model'] = st.selectbox(
                 "Select Code Model",
                 ["gpt-4o", "gpt-4", "llama"],
-                index=["gpt-4o", "gpt-4", "llama"].index(st.session_state.selected_code_model),
+                index=["gpt-4o", "gpt-4", "llama"].index(st.session_state['selected_code_model']),
                 key="selected_code_model"
             )
 
@@ -767,7 +795,7 @@ def sidebar_menu():
             st.session_state['selected_image_model'] = st.selectbox(
                 "Select Image Model",
                 ["dalle3", "stable diffusion", "flux"],
-                index=["dalle3", "stable diffusion", "flux"].index(st.session_state.selected_image_model),
+                index=["dalle3", "stable diffusion", "flux"].index(st.session_state['selected_image_model']),
                 key="selected_image_model"
             )
 
@@ -775,7 +803,7 @@ def sidebar_menu():
             st.session_state['selected_video_model'] = st.selectbox(
                 "Select Video Model",
                 ["stable diffusion", "luma"],
-                index=["stable diffusion", "luma"].index(st.session_state.selected_video_model),
+                index=["stable diffusion", "luma"].index(st.session_state['selected_video_model']),
                 key="selected_video_model"
             )
 
@@ -783,7 +811,7 @@ def sidebar_menu():
             st.session_state['selected_audio_model'] = st.selectbox(
                 "Select Audio Model",
                 ["music gen"],
-                index=["music gen"].index(st.session_state.selected_audio_model),
+                index=["music gen"].index(st.session_state['selected_audio_model']),
                 key="selected_audio_model"
             )
 
@@ -825,6 +853,7 @@ def sidebar_menu():
 
             st.markdown("### Chat History")
             display_chat_history()
+
 
 def chat_with_gpt(prompt):
     """Handle chat interactions with GPT-4o."""
