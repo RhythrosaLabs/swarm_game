@@ -6,3 +6,5 @@ openai
 fpdf
 gtts
 moviepy
+numpy
+pandas
