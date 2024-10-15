@@ -3,9 +3,13 @@ import requests
 import json
 import os
 import zipfile
+import pandas as pd
 from io import BytesIO
-from PIL import Image
-import base64
+from PIL import Image, ImageOps
+from gtts import gTTS
+import replicate
+import time
+from fpdf import FPDF
 
 # Set page configuration
 st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
@@ -48,6 +52,8 @@ if 'chat_knowledge_base' not in st.session_state:
 # Constants
 GLOBAL_FILES_DIR = "global_files"
 CHAT_API_URL = "https://api.openai.com/v1/chat/completions"
+DALLE_API_URL = "https://api.openai.com/v1/images/generations"
+STABILITY_API_URL = "https://api.stability.ai/v2beta/image-to-video"
 
 # Helper Functions
 def load_api_keys():
@@ -83,14 +89,15 @@ def display_chat_history():
         else:
             st.sidebar.markdown(f"**Assistant:** {entry['content']}")
 
-def generate_content(prompt, role):
-    model = 'gpt-4o'  # Using GPT-4o
+def generate_content(action, prompt, budget, platforms, api_key):
     headers = get_headers()
     data = {
-        "model": model,
+        "model": "gpt-4o",
         "messages": [
-            {"role": "system", "content": f"You are a creative assistant specializing in {role}."},
-            {"role": "user", "content": prompt}
+            {"role": "system", "content": f"You are a creative assistant specializing in {action}."},
+            {"role": "user", "content": f"{prompt}"},
+            {"role": "user", "content": f"Budget: {budget}"},
+            {"role": "user", "content": f"Platforms: {', '.join([k for k, v in platforms.items() if v])}"}
         ],
         "max_tokens": 2000,
         "temperature": 0.7
@@ -105,199 +112,289 @@ def generate_content(prompt, role):
         st.error(f"Error generating content: {e}")
         return None
 
-def generate_image(prompt, size="512x512"):
-    model = st.session_state.get('selected_image_model', 'dall-e')
-    if model == 'dall-e':
-        headers = get_headers()
-        data = {
-            "prompt": prompt,
-            "n": 1,
-            "size": size,
-            "response_format": "url"
-        }
-        try:
-            response = requests.post("https://api.openai.com/v1/images/generations", headers=headers, json=data)
-            response.raise_for_status()
-            response_data = response.json()
-            image_url = response_data['data'][0]['url']
-            return image_url
-        except Exception as e:
-            st.error(f"Error generating image with DALL·E: {e}")
-            return None
-    elif model == 'stable-diffusion':
-        stability_api_key = st.session_state.api_keys.get('stability')
-        if not stability_api_key:
-            st.error("Stability AI API key is not set.")
-            return None
-        return generate_image_with_stability(prompt, size)
-    else:
-        st.error("Selected image model is not supported yet.")
-        return None
+def generate_budget_spreadsheet(budget):
+    try:
+        budget_value = float(budget)
+    except ValueError:
+        budget_value = 1000
 
-def generate_image_with_stability(prompt, size):
+    budget_allocation = {
+        "Advertising": 0.5,
+        "Content Creation": 0.2,
+        "Social Media": 0.2,
+        "Miscellaneous": 0.1
+    }
+
+    budget_data = [
+        {"Category": category, "Amount": amount * budget_value}
+        for category, amount in budget_allocation.items()
+    ]
+
+    budget_data.append({"Category": "Total", "Amount": budget_value})
+
+    df = pd.DataFrame(budget_data)
+
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Budget')
+
+    return excel_buffer.getvalue()
+
+def truncate_post_content(post_content):
+    max_length = 100
+    if len(post_content) > max_length:
+        return post_content[:max_length] + "..."
+    return post_content
+
+def extract_hashtags(post_content):
+    return " ".join([word for word in post_content.split() if word.startswith("#")])
+
+def generate_social_media_schedule(campaign_concept, platforms):
+    optimal_times = {
+        "facebook": "12:00 PM",
+        "twitter": "10:00 AM",
+        "instagram": "3:00 PM",
+        "linkedin": "11:00 AM"
+    }
+
+    days_of_week = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    schedule_data = []
+
+    for day in days_of_week:
+        for platform, selected in platforms.items():
+            if selected:
+                post_content = f"Post about {campaign_concept} on {platform.capitalize()}"
+                truncated_content = truncate_post_content(post_content)
+                hashtags = extract_hashtags(post_content)
+                schedule_data.append({
+                    "Day": day,
+                    "Platform": platform.capitalize(),
+                    "Time": optimal_times.get(platform, "12:00 PM"),
+                    "Post": truncated_content,
+                    "Hashtags": hashtags
+                })
+
+    df = pd.DataFrame(schedule_data)
+    pivot_table = df.pivot(index="Platform", columns="Day", values=["Time", "Post", "Hashtags"]).swaplevel(axis=1).sort_index(axis=1, level=0)
+
+    excel_buffer = BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+        pivot_table.to_excel(writer, sheet_name='Social Media Schedule')
+
+    return excel_buffer.getvalue()
+
+def generate_images(api_key, image_prompts, sizes, hd=False):
+    images = {}
+
+    for i, (desc, size) in enumerate(zip(image_prompts, sizes)):
+        st.info(f"Generating image {i+1}...")
+        image_url = generate_image(api_key, desc, size, hd)
+        if image_url:
+            try:
+                image_data = download_image(image_url)
+                if image_data:
+                    images[f"image_{i+1}.png"] = image_data
+                else:
+                    images[f"image_{i+1}.png"] = b""
+            except Exception as e:
+                images[f"image_{i+1}.png"] = b""
+                st.error(f"Error downloading image {i+1}: {str(e)}")
+        else:
+            images[f"image_{i+1}.png"] = b""
+    return images
+
+def generate_image(api_key, prompt, size="1024x1024", hd=False):
+    quality = "hd" if hd else "standard"
     headers = {
-        "Authorization": f"Bearer {st.session_state.api_keys['stability']}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     data = {
-        "text_prompts": [{"text": prompt}],
-        "cfg_scale": 7,
-        "clip_guidance_preset": "FAST_BLUE",
-        "height": int(size.split('x')[1]),
-        "width": int(size.split('x')[0]),
-        "samples": 1,
-        "steps": 30,
+        "model": "dall-e",
+        "prompt": prompt,
+        "n": 1,
+        "size": size,
+        "response_format": "url"
     }
     try:
-        response = requests.post("https://api.stability.ai/v1/generation/stable-diffusion-xl-beta-v2-2-2/text-to-image", headers=headers, json=data)
+        response = requests.post(DALLE_API_URL, headers=headers, json=data)
         response.raise_for_status()
         response_data = response.json()
-        image_base64 = response_data['artifacts'][0]['base64']
-        image_data = base64.b64decode(image_base64)
-        return image_data
-    except Exception as e:
-        st.error(f"Error generating image with Stability AI: {e}")
+        image_url = response_data['data'][0]['url']
+        return image_url
+    except requests.RequestException as e:
+        st.error(f"Error generating image: {e}")
         return None
 
-def generate_video(prompt):
-    st.info("Video generation is not yet implemented.")
-    return None, None
+def download_image(image_url):
+    try:
+        response = requests.get(image_url)
+        response.raise_for_status()
+        return response.content
+    except requests.RequestException as e:
+        st.error(f"Error downloading image: {e}")
+        return None
 
-def display_image(image_data, caption):
+def create_gif(images, filter_type=None):
+    st.info("Creating GIF...")
+    try:
+        pil_images = [Image.open(BytesIO(img)) for img in images.values()]
+        if filter_type:
+            pil_images = [apply_filter(img, filter_type) for img in pil_images]
+        gif_buffer = BytesIO()
+        pil_images[0].save(gif_buffer, format='GIF', save_all=True, append_images=pil_images[1:], duration=1000, loop=0)
+        gif_buffer.seek(0)
+        return gif_buffer
+    except Exception as e:
+        st.error(f"Error creating GIF: {str(e)}")
+        return None
+
+def apply_filter(image, filter_type):
+    if filter_type == "sepia":
+        return image.convert("L").convert("RGB")
+    elif filter_type == "greyscale":
+        return ImageOps.grayscale(image).convert("RGB")
+    elif filter_type == "negative":
+        return ImageOps.invert(image)
+    elif filter_type == "solarize":
+        return ImageOps.solarize(image, threshold=128)
+    elif filter_type == "posterize":
+        return ImageOps.posterize(image, bits=2)
+    else:
+        return image
+
+def generate_audio_logo(prompt, api_key):
+    input_data = {
+        "prompt": prompt,
+        "model_version": "stereo-large",
+        "output_format": "mp3",
+        "normalization_strategy": "peak"
+    }
+
+    try:
+        replicate_client = replicate.Client(api_token=api_key)
+        output_url = replicate_client.run(
+            "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
+            input=input_data
+        )
+        audio_data = requests.get(output_url).content
+    except replicate.exceptions.ReplicateError as e:
+        st.error(f"Error generating audio: {str(e)}")
+        return None, None
+    except requests.RequestException as e:
+        st.error(f"Error downloading audio: {e}")
+        return None, None
+
+    file_name = prompt.replace(" ", "_") + ".mp3"
+    file_data = audio_data
+
+    return file_name, file_data
+
+def generate_video_logo(prompt, api_key):
+    headers = get_headers()
+    data = {
+        "model": "dall-e",
+        "prompt": prompt,
+        "n": 1,
+        "size": "1024x1024",
+        "response_format": "url"
+    }
+
+    try:
+        response = requests.post(DALLE_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        image_url = response_data['data'][0]['url']
+        image_data = requests.get(image_url).content
+    except requests.RequestException as e:
+        st.error(f"Error generating image: {e}")
+        return None, None
+
+    file_name = prompt.replace(" ", "_") + ".png"
+    file_data = image_data
+
+    return file_name, file_data
+
+def animate_image_to_video(image_data, prompt):
+    stability_api_key = st.session_state.api_keys["stability"]
+    url = STABILITY_API_URL
+
     image = Image.open(BytesIO(image_data))
-    st.image(image, caption=caption, use_column_width=True)
+    image = image.resize((768, 768))
 
-def generate_audio(prompt):
-    st.info("Music generation is not yet implemented.")
-    return None, None
+    buffered = BytesIO()
+    image.save(buffered, format="PNG")
+    buffered.seek(0)
 
-def describe_image(file_data):
-    # Using GPT-4o with image understanding capabilities
-    model = 'gpt-4o'
-    headers = get_headers()
-    base64_image = base64.b64encode(file_data).decode('utf-8')
-    image_data_url = f"data:image/png;base64,{base64_image}"
-
-    # Prepare the message content with the image
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "Describe the content of this image."},
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data_url
-                    }
-                }
-            ]
+    response = requests.post(
+        url,
+        headers={
+            "authorization": f"Bearer {stability_api_key}"
+        },
+        files={
+            "image": buffered
+        },
+        data={
+            "seed": 0,
+            "cfg_scale": 1.8,
+            "motion_bucket_id": 127
         }
-    ]
+    )
 
-    data = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": 500,
-        "temperature": 0.5
-    }
-
-    try:
-        response = requests.post(CHAT_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        response_data = response.json()
-        description = response_data['choices'][0]['message']['content']
-        return description.strip()
-    except Exception as e:
-        st.error(f"Error describing image: {e}")
+    if response.status_code == 200:
+        generation_id = response.json().get('id')
+        return generation_id
+    else:
+        st.error(f"Error initiating video generation: {response.text}")
         return None
 
-def analyze_and_store_image(file_name, file_data):
-    description = describe_image(file_data)
-    if description:
-        add_to_chat_knowledge_base(file_name, description)
-        st.success(f"Image {file_name} analyzed and stored in knowledge base.")
-    else:
-        st.error(f"Failed to analyze and store image {file_name}.")
+def fetch_generated_video(generation_id):
+    stability_api_key = st.session_state.api_keys["stability"]
+    url = f"https://api.stability.ai/v2beta/image-to-video/result/{generation_id}"
 
-def generate_file_with_gpt(prompt):
-    openai_api_key = st.session_state.api_keys.get("openai")
-    if not openai_api_key:
-        st.error("OpenAI API key is not set. Please add it in the API Keys tab.")
-        return None, None
+    while True:
+        response = requests.get(
+            url,
+            headers={
+                'accept': "video/*",
+                'authorization': f"Bearer {stability_api_key}"
+            }
+        )
 
-    specific_prompt = prompt.strip()
+        if response.status_code == 202:
+            st.session_state["generation_status"] = "Generation in-progress, trying again in 10 seconds..."
+            time.sleep(10)
+        elif response.status_code == 200:
+            st.session_state["generation_status"] = "Generation complete!"
+            return response.content
+        else:
+            st.error(f"Error fetching video: {response.text}")
+            return None
 
-    # Identify file type based on prompt
-    if prompt.startswith("/python "):
-        file_extension = ".py"
-        specific_prompt = prompt.replace("/python ", "").strip()
-    elif prompt.startswith("/html "):
-        file_extension = ".html"
-        specific_prompt = prompt.replace("/html ", "").strip()
-    elif prompt.startswith("/js "):
-        file_extension = ".js"
-        specific_prompt = prompt.replace("/js ", "").strip()
-    elif prompt.startswith("/md "):
-        file_extension = ".md"
-        specific_prompt = prompt.replace("/md ", "").strip()
-    elif prompt.startswith("/txt "):
-        file_extension = ".txt"
-        specific_prompt = prompt.replace("/txt ", "").strip()
-    elif prompt.startswith("/pdf "):
-        file_extension = ".pdf"
-        specific_prompt = prompt.replace("/pdf ", "").strip()
-    else:
-        file_extension = ".txt"
+def create_master_document(campaign_plan):
+    master_doc = "Marketing Campaign Master Document\n\n"
+    for key, value in campaign_plan.items():
+        if key == "images":
+            master_doc += f"{key.capitalize()}:\n"
+            for img_key in value:
+                master_doc += f" - {img_key}: See attached image.\n"
+        else:
+            master_doc += f"{key.replace('_', ' ').capitalize()}:\n\n{value}\n\n{'='*50}\n\n"
+    return master_doc
 
-    # Prepare the prompt for the model
-    model_prompt = f"Generate a {file_extension} file with the following content:\n{specific_prompt}"
-
-    model = 'gpt-4o'
-    headers = get_headers()
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "user", "content": model_prompt}
-        ],
-        "max_tokens": 2000,
-        "temperature": 0.7
-    }
-
-    try:
-        response = requests.post(CHAT_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        response_data = response.json()
-        generated_content = response_data['choices'][0]['message']['content']
-
-        # Remove any code blocks or markdown formatting
-        if generated_content.startswith("```"):
-            generated_content = generated_content.strip("```").strip()
-
-        file_name = specific_prompt[:50].replace(" ", "_") + file_extension
-        file_data = generated_content.encode("utf-8")
-
-        return file_name, file_data
-    except Exception as e:
-        st.error(f"Error generating file: {e}")
-        return None, None
-
-def analyze_and_store_file(file_name, file_data):
-    if file_name.lower().endswith(('.txt', '.py', '.html', '.md')):
-        content = file_data.decode('utf-8')
-        analyzed_content = enhance_content(content, file_name)
-        add_to_chat_knowledge_base(file_name, analyzed_content)
-        st.success(f"Analyzed and stored {file_name} in knowledge base.")
-    elif file_name.lower().endswith('.zip'):
-        with zipfile.ZipFile(BytesIO(file_data), 'r') as zip_ref:
-            for zip_info in zip_ref.infolist():
-                if zip_info.filename.lower().endswith(('.txt', '.py', '.html', '.md')):
-                    with zip_ref.open(zip_info.filename) as f:
-                        content = f.read().decode('utf-8')
-                        analyzed_content = enhance_content(content, zip_info.filename)
-                        add_to_chat_knowledge_base(zip_info.filename, analyzed_content)
-                        st.success(f"Analyzed and stored {zip_info.filename} from {file_name} in knowledge base.")
-    elif file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-        analyze_and_store_image(file_name, file_data)
+def create_zip(content_dict):
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        for key, value in content_dict.items():
+            if key == 'images' and isinstance(value, dict):
+                for img_name, img_data in value.items():
+                    zip_file.writestr(img_name, img_data)
+            elif isinstance(value, bytes):
+                zip_file.writestr(f"{key}", value)
+            elif isinstance(value, str):
+                zip_file.writestr(f"{key}.txt", value)
+    zip_buffer.seek(0)
+    return zip_buffer
 
 def enhance_content(content, filename):
     api_key = st.session_state.api_keys.get('openai')
@@ -305,13 +402,29 @@ def enhance_content(content, filename):
         st.warning("OpenAI API Key is required for content enhancement.")
         return content
 
-    model = 'gpt-4o'
     headers = get_headers()
+    content_summary = ""
+
+    if isinstance(content, bytes):
+        try:
+            df = pd.read_excel(BytesIO(content))
+            content_summary = df.to_string()
+        except ValueError:
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                return "Skipped image file."
+            else:
+                try:
+                    content_summary = content.decode('utf-8')
+                except UnicodeDecodeError:
+                    return "Error: Unable to read the provided file as text or Excel file."
+    else:
+        content_summary = content
+
     data = {
-        "model": model,
+        "model": "gpt-4o",
         "messages": [
             {"role": "system", "content": f"Enhance and summarize the following content from {filename}."},
-            {"role": "user", "content": content}
+            {"role": "user", "content": content_summary}
         ],
         "max_tokens": 1500,
         "temperature": 0.7
@@ -321,7 +434,7 @@ def enhance_content(content, filename):
         response = requests.post(CHAT_API_URL, headers=headers, json=data)
         response.raise_for_status()
         response_data = response.json()
-        enhanced_content = response_data['choices'][0]['message']['content']
+        enhanced_content = response_data["choices"][0]["message"]["content"]
         return enhanced_content.strip()
     except Exception as e:
         st.error(f"Error enhancing content: {e}")
@@ -331,14 +444,6 @@ def delete_all_files():
     st.session_state["global_file_storage"] = {}
     st.session_state["chat_knowledge_base"] = {}
     st.success("All files and knowledge base entries have been deleted.")
-
-def create_zip_of_global_files():
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zipf:
-        for file_name, file_data in st.session_state.get("global_file_storage", {}).items():
-            zipf.writestr(file_name, file_data)
-    zip_buffer.seek(0)
-    return zip_buffer
 
 def initialize_global_files():
     if not os.path.exists(GLOBAL_FILES_DIR):
@@ -354,7 +459,6 @@ def file_management_tab():
         analyze_and_store_file(uploaded_file.name, file_data)
         st.success(f"Uploaded {uploaded_file.name}")
 
-    # Add text field and button for generating files using GPT-4o
     st.subheader("Generate File")
     generation_prompt = st.text_input("Enter prompt to generate file (e.g., '/python Generate a script that says hello world'):")
     if st.button("Generate File"):
@@ -376,7 +480,6 @@ def file_management_tab():
     if files:
         st.subheader("Uploaded Files")
 
-        # Place the Download All as ZIP button above the files
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Download All as ZIP"):
@@ -395,7 +498,198 @@ def file_management_tab():
         for file_name, file_data in files.items():
             st.write(f"{file_name}: {len(file_data)} bytes")
 
-# Sidebar with Tabs: API Keys and Chat
+def generate_marketing_campaign_tab():
+    st.title("🧠 Generate Marketing Campaign")
+
+    api_key = st.session_state.api_keys.get("openai")
+    replicate_api_key = st.session_state.api_keys.get("replicate", None)
+
+    if not api_key:
+        st.warning("Please provide a valid OpenAI API Key.")
+        return
+
+    prompt = st.text_area("Prompt", "Describe your product or campaign...")
+
+    budget = st.text_input("Budget", "1000")
+
+    with st.expander("Advanced Options"):
+        st.subheader("Social Media Platforms")
+        platforms = {
+            "facebook": st.checkbox("Facebook"),
+            "twitter": st.checkbox("Twitter", value=True),
+            "instagram": st.checkbox("Instagram"),
+            "linkedin": st.checkbox("LinkedIn")
+        }
+
+        st.subheader("Image Tools")
+        bypass_images = st.checkbox("Bypass image generation", value=True)
+
+        image_size_options = {
+            "Wide": "1792x1024",
+            "Tall": "1024x1792",
+            "Square": "1024x1024"
+        }
+
+        if not bypass_images:
+            if "image_prompts" not in st.session_state:
+                st.session_state["image_prompts"] = [""]
+                st.session_state["image_sizes"] = ["Square"]
+
+            for i in range(len(st.session_state["image_prompts"])):
+                cols = st.columns([3, 1, 1])
+                with cols[0]:
+                    st.session_state["image_prompts"][i] = st.text_input(f"Image {i+1} Prompt:", st.session_state["image_prompts"][i])
+                with cols[1]:
+                    st.session_state["image_sizes"][i] = st.selectbox(f"Size {i+1}:", options=list(image_size_options.keys()), index=["Wide", "Tall", "Square"].index(st.session_state["image_sizes"][i]))
+                with cols[2]:
+                    if st.button("➖", key=f"remove_image_{i}"):
+                        st.session_state["image_prompts"].pop(i)
+                        st.session_state["image_sizes"].pop(i)
+                        st.experimental_rerun()
+
+            if len(st.session_state["image_prompts"]) < 5:
+                if st.button("➕ Add Image"):
+                    st.session_state["image_prompts"].append("")
+                    st.session_state["image_sizes"].append("Square")
+
+            hd_images = st.checkbox("Generate HD images")
+
+            create_gif_checkbox = st.checkbox("Create GIF from images", value=False)
+            filter_type = st.selectbox("Select GIF Filter:", ["None", "Sepia", "Greyscale", "Negative", "Solarize", "Posterize"])
+            filter_type = filter_type.lower() if filter_type != "None" else None
+
+        st.subheader("Other Settings")
+        add_audio_logo = st.checkbox("Add audio logo")
+        add_video_logo = st.checkbox("Add video logo")
+
+    if st.button("Generate Marketing Campaign"):
+        with st.spinner("Generating..."):
+            campaign_plan = {}
+
+            # Generate and analyze campaign concept
+            st.info("Generating campaign concept...")
+            campaign_concept = generate_content("campaign concept", prompt, budget, platforms, api_key)
+            campaign_plan['campaign_concept'] = campaign_concept
+            add_file_to_global_storage("campaign_concept.txt", campaign_concept)
+
+            st.info("Analyzing campaign concept...")
+            analyzed_concept = enhance_content(campaign_concept, "Campaign Concept")
+            add_to_chat_knowledge_base("Campaign Concept", analyzed_concept)
+            add_file_to_global_storage("analyzed_campaign_concept.txt", analyzed_concept)
+
+            # Generate and analyze marketing plan
+            st.info("Generating marketing plan...")
+            marketing_plan = generate_content("marketing plan", prompt, budget, platforms, api_key)
+            campaign_plan['marketing_plan'] = marketing_plan
+            add_file_to_global_storage("marketing_plan.txt", marketing_plan)
+
+            st.info("Analyzing marketing plan...")
+            analyzed_plan = enhance_content(marketing_plan, "Marketing Plan")
+            add_to_chat_knowledge_base("Marketing Plan", analyzed_plan)
+            add_file_to_global_storage("analyzed_marketing_plan.txt", analyzed_plan)
+
+            # Generate and analyze budget spreadsheet
+            st.info("Generating budget spreadsheet...")
+            budget_spreadsheet = generate_budget_spreadsheet(budget)
+            campaign_plan['budget_spreadsheet'] = budget_spreadsheet
+            add_file_to_global_storage("budget_spreadsheet.xlsx", budget_spreadsheet)
+
+            st.info("Analyzing budget spreadsheet...")
+            analyzed_budget = enhance_content(budget_spreadsheet, "Budget Spreadsheet")
+            add_to_chat_knowledge_base("Budget Spreadsheet", analyzed_budget)
+            add_file_to_global_storage("analyzed_budget_spreadsheet.txt", analyzed_budget)
+
+            # Generate and analyze social media schedule
+            st.info("Generating social media schedule...")
+            social_media_schedule = generate_social_media_schedule(campaign_concept, platforms)
+            campaign_plan['social_media_schedule'] = social_media_schedule
+            add_file_to_global_storage("social_media_schedule.xlsx", social_media_schedule)
+
+            st.info("Analyzing social media schedule...")
+            analyzed_schedule = enhance_content(social_media_schedule, "Social Media Schedule")
+            add_to_chat_knowledge_base("Social Media Schedule", analyzed_schedule)
+            add_file_to_global_storage("analyzed_social_media_schedule.txt", analyzed_schedule)
+
+            # Generate images if not bypassed
+            if not bypass_images:
+                st.info("Generating images...")
+                custom_prompts = st.session_state["image_prompts"]
+                image_sizes = [image_size_options[size] for size in st.session_state["image_sizes"]]
+                images = generate_images(api_key, custom_prompts, image_sizes, hd_images)
+                campaign_plan['images'] = images
+
+                for image_key, image_data in images.items():
+                    st.info(f"Analyzing {image_key}...")
+                    analyzed_image = enhance_content(image_data, image_key)
+                    add_to_chat_knowledge_base(image_key, analyzed_image)
+                    add_file_to_global_storage(image_key, image_data)
+
+                if create_gif_checkbox and images:
+                    st.info("Creating GIF...")
+                    gif_data = create_gif(images, filter_type)
+                    campaign_plan['images']['animated_gif.gif'] = gif_data.getvalue()
+                    add_file_to_global_storage("animated_gif.gif", gif_data.getvalue())
+
+            # Generate audio logo if selected and replicate API key is provided
+            if add_audio_logo:
+                if replicate_api_key:
+                    st.info("Generating audio logo...")
+                    audio_prompt = f"Generate an audio logo for the following campaign concept: {campaign_concept}"
+                    file_name, audio_data = generate_audio_logo(audio_prompt, replicate_api_key)
+                    if audio_data:
+                        campaign_plan['audio_logo'] = audio_data
+                        add_file_to_global_storage(file_name, audio_data)
+                else:
+                    st.warning("Replicate API Key is required to generate an audio logo.")
+
+            # Generate video logo if selected
+            if add_video_logo:
+                st.info("Generating video logo...")
+                video_prompt = f"Generate a video logo for the following campaign concept: {campaign_concept}"
+                file_name, video_logo_data = generate_video_logo(video_prompt, api_key)
+                if video_logo_data:
+                    st.info("Animating video logo...")
+                    generation_id = animate_image_to_video(video_logo_data, video_prompt)
+                    if generation_id:
+                        video_data = fetch_generated_video(generation_id)
+                        if video_data:
+                            campaign_plan['video_logo'] = video_data
+                            add_file_to_global_storage("video_logo.mp4", video_data)
+
+            # Generate and analyze resources and tips
+            st.info("Generating resources and tips...")
+            resources_tips = generate_content("resources and tips", prompt, budget, platforms, api_key)
+            campaign_plan['resources_tips'] = resources_tips
+            add_file_to_global_storage("resources_tips.txt", resources_tips)
+
+            st.info("Analyzing resources and tips...")
+            analyzed_resources = enhance_content(resources_tips, "Resources and Tips")
+            add_to_chat_knowledge_base("Resources and Tips", analyzed_resources)
+            add_file_to_global_storage("analyzed_resources_tips.txt", analyzed_resources)
+
+            # Generate and analyze recap
+            st.info("Generating recap...")
+            recap = generate_content("recap", prompt, budget, platforms, api_key)
+            campaign_plan['recap'] = recap
+            add_file_to_global_storage("recap.txt", recap)
+
+            st.info("Analyzing recap...")
+            analyzed_recap = enhance_content(recap, "Recap")
+            add_to_chat_knowledge_base("Recap", analyzed_recap)
+            add_file_to_global_storage("analyzed_recap.txt", analyzed_recap)
+
+            st.info("Generating master document...")
+            master_document = create_master_document(campaign_plan)
+            campaign_plan['master_document'] = master_document
+            add_file_to_global_storage("master_document.txt", master_document)
+
+            st.info("Packaging into ZIP...")
+            zip_data = create_zip(campaign_plan)
+
+            st.session_state.campaign_plan = campaign_plan
+            st.success("Marketing Campaign Generated")
+            st.download_button(label="Download ZIP", data=zip_data.getvalue(), file_name="marketing_campaign.zip", key="download_campaign_zip")
+
 def sidebar():
     with st.sidebar:
         tab = st.radio("Sidebar", ["🔑 API Keys", "💬 Chat"], key="sidebar_tab")
@@ -420,7 +714,6 @@ def sidebar():
         elif tab == "💬 Chat":
             st.header("💬 Chat Assistant")
 
-            # Chat functionality in sidebar
             use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
 
             preset_bots = load_preset_bots() if use_personal_assistants else None
@@ -447,18 +740,15 @@ def sidebar():
                 with st.spinner("Fetching response..."):
                     all_files = get_all_global_files()
 
-                    # Limit the number of files and their size
                     max_files = 5
-                    max_file_size = 1024 * 1024  # 1 MB
+                    max_file_size = 1024 * 1024
                     relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
                     selected_files = list(relevant_files.keys())[:max_files]
 
-                    # Ensure all files in selected_files exist in session state
                     for file in selected_files:
                         if file not in st.session_state:
                             st.session_state[file] = all_files[file]
 
-                    # Include bot instructions in the prompt if a bot is selected
                     if selected_bot:
                         full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
                     else:
@@ -469,7 +759,6 @@ def sidebar():
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
                     display_chat_history()
 
-            # Display chat history
             display_chat_history()
 
 def chat_with_gpt(prompt, uploaded_files):
@@ -506,35 +795,12 @@ def chat_with_gpt(prompt, uploaded_files):
         "temperature": 0.7
     }
 
-    # Handle image files in the knowledge base
-    images_in_kb = []
-    for file_name, description in st.session_state.chat_knowledge_base.items():
-        if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-            file_data = st.session_state.global_file_storage.get(file_name)
-            if file_data:
-                base64_image = base64.b64encode(file_data).decode('utf-8')
-                image_data_url = f"data:image/png;base64,{base64_image}"
-                images_in_kb.append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": image_data_url
-                    }
-                })
-
-    # Include images and files in the prompt
-    if images_in_kb:
-        data["messages"][-1]["content"] = [
-            {"type": "text", "text": prompt},
-            *images_in_kb
-        ]
-
     try:
         response = requests.post(CHAT_API_URL, headers=headers, json=data)
         response.raise_for_status()
         response_data = response.json()
         assistant_reply = response_data["choices"][0]["message"]["content"]
 
-        # Save chat history
         chat_history.append({"role": "user", "content": prompt})
         chat_history.append({"role": "assistant", "content": assistant_reply})
         st.session_state["chat_history"] = chat_history
@@ -544,7 +810,6 @@ def chat_with_gpt(prompt, uploaded_files):
         st.error(f"Error in chat: {e}")
         return "I'm sorry, I couldn't process your request."
 
-# Load preset bots
 def load_preset_bots():
     if os.path.exists('presetBots.json'):
         with open('presetBots.json') as f:
@@ -552,7 +817,6 @@ def load_preset_bots():
     else:
         return {}
 
-# Main Tabs
 def main_tabs():
     tab1, tab2, tab3, tab4 = st.tabs([
         "🧠 AI Content Generation",
@@ -561,26 +825,9 @@ def main_tabs():
         "📁 File Management"
     ])
 
-    # Tab 1: AI Content Generation
     with tab1:
-        st.header("🧠 AI Content Generation")
-        st.write("Generate marketing campaigns, game plans, comic books, and more using AI.")
-        action = st.selectbox("Choose an action", ["Select an action", "Marketing Campaign", "Game Plan", "Comic Book"])
-        prompt = st.text_area("Enter your topic/keywords:")
-        if st.button("Generate", key="generate_content"):
-            if action == "Select an action":
-                st.warning("Please select an action.")
-            elif not prompt:
-                st.warning("Please enter a topic or keywords.")
-            else:
-                if action == "Marketing Campaign":
-                    generate_marketing_campaign(prompt)
-                elif action == "Game Plan":
-                    generate_game_plan(prompt)
-                elif action == "Comic Book":
-                    st.write("Comic Book generation coming soon!")
+        generate_marketing_campaign_tab()
 
-    # Tab 2: Media Generation
     with tab2:
         st.header("🎬 Media Generation")
         st.write("Generate images and videos using AI models.")
@@ -589,12 +836,9 @@ def main_tabs():
             image_prompt = st.text_area("Enter an image prompt:")
             if st.button("Generate Image"):
                 file_name = image_prompt.replace(" ", "_") + ".png"
-                image_url_or_data = generate_image(image_prompt)
+                image_url_or_data = generate_image(st.session_state.api_keys['openai'], image_prompt)
                 if image_url_or_data:
-                    if isinstance(image_url_or_data, bytes):
-                        image_data = image_url_or_data
-                    else:
-                        image_data = requests.get(image_url_or_data).content
+                    image_data = download_image(image_url_or_data)
                     if image_data:
                         st.session_state.generated_images.append(image_data)
                         display_image(image_data, "Generated Image")
@@ -603,7 +847,7 @@ def main_tabs():
         elif media_type == "Video Generation":
             video_prompt = st.text_area("Enter a video prompt:")
             if st.button("Generate Video"):
-                file_name, video_data = generate_video(video_prompt)
+                file_name, video_data = generate_video_with_replicate(video_prompt, st.session_state.api_keys.get("replicate"))
                 if video_data:
                     st.session_state.generated_videos.append(video_data)
                     st.video(video_data)
@@ -611,12 +855,11 @@ def main_tabs():
         elif media_type == "Music Generation":
             music_prompt = st.text_area("Enter a music prompt:")
             if st.button("Generate Music"):
-                file_name, music_data = generate_audio(music_prompt)
+                file_name, music_data = generate_music_with_replicate(music_prompt, st.session_state.api_keys.get("replicate"))
                 if music_data:
                     st.audio(music_data)
                     add_file_to_global_storage(file_name, music_data)
 
-    # Tab 3: Custom Workflows
     with tab3:
         st.header("📂 Custom Workflows")
         st.write("Create custom automated workflows.")
@@ -662,142 +905,9 @@ def main_tabs():
                 mime="application/zip"
             )
 
-    # Tab 4: File Management
     with tab4:
         file_management_tab()
 
-# Generate Marketing Campaign Function
-def generate_marketing_campaign(prompt):
-    st.info("Generating campaign concept...")
-    campaign_concept = generate_content(f"Create a detailed marketing campaign concept based on the following prompt:\n\n{prompt}\n\nInclude target audience analysis, unique selling points, and overall strategy.", "marketing")
-    st.session_state.campaign_plan['campaign_concept'] = campaign_concept
-    add_file_to_global_storage("campaign_concept.txt", campaign_concept)
-
-    st.info("Generating marketing plan...")
-    marketing_plan = generate_content(f"Develop a comprehensive marketing plan for the campaign:\n\n{campaign_concept}\n\nInclude social media strategies, content ideas, and advertising channels.", "marketing")
-    st.session_state.campaign_plan['marketing_plan'] = marketing_plan
-    add_file_to_global_storage("marketing_plan.txt", marketing_plan)
-
-    st.info("Generating social media posts...")
-    social_media_posts = generate_content(f"Create a series of engaging social media posts for the campaign:\n\n{campaign_concept}\n\nInclude captions and hashtags for platforms like Instagram, Twitter, and Facebook.", "marketing")
-    st.session_state.campaign_plan['social_media_posts'] = social_media_posts
-    add_file_to_global_storage("social_media_posts.txt", social_media_posts)
-
-    st.info("Generating email marketing content...")
-    email_content = generate_content(f"Write compelling email marketing content for the campaign:\n\n{campaign_concept}\n\nInclude subject lines, body text, and calls to action.", "marketing")
-    st.session_state.campaign_plan['email_content'] = email_content
-    add_file_to_global_storage("email_content.txt", email_content)
-
-    st.info("Generating images...")
-    images = {}
-    descriptions = {
-        "banner": "Design a captivating banner image that represents the campaign's theme. No text.",
-        "instagram_post": "Create an eye-catching Instagram post image that aligns with the campaign. No text.",
-        "facebook_ad": "Produce an attractive image suitable for a Facebook ad for the campaign. No text."
-    }
-    sizes = {
-        "banner": "1792x828",
-        "instagram_post": "1080x1080",
-        "facebook_ad": "1200x628"
-    }
-    for key, desc in descriptions.items():
-        image_data = generate_image(f"{desc}\n\nCampaign concept: {campaign_concept}", sizes[key])
-        if image_data:
-            if isinstance(image_data, bytes):
-                images[f"{key}.png"] = image_data
-            else:
-                image_content = requests.get(image_data).content
-                if image_content:
-                    images[f"{key}.png"] = image_content
-            add_file_to_global_storage(f"{key}.png", images[f"{key}.png"])
-            analyze_and_store_image(f"{key}.png", images[f"{key}.png"])
-    st.session_state.campaign_plan['images'] = images
-
-    st.info("Compiling all materials into a master document...")
-    master_doc = create_master_document(st.session_state.campaign_plan)
-    st.session_state.campaign_plan['master_document'] = master_doc
-    add_file_to_global_storage("master_document.txt", master_doc)
-
-    st.success("Marketing Campaign Generated!")
-    st.download_button(
-        label="Download Campaign ZIP",
-        data=create_zip(st.session_state.campaign_plan).getvalue(),
-        file_name="marketing_campaign.zip",
-        mime="application/zip"
-    )
-
-def create_master_document(content_dict):
-    master_doc = ""
-    for key in content_dict.keys():
-        if key == "images":
-            continue
-        master_doc += f"{key.replace('_', ' ').title()}:\n\n{content_dict[key]}\n\n{'='*50}\n\n"
-    return master_doc
-
-def create_zip(content_dict):
-    zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-        for key, value in content_dict.items():
-            if key == 'images' and isinstance(value, dict):
-                for img_name, img_data in value.items():
-                    zip_file.writestr(img_name, img_data)
-            elif isinstance(value, str):
-                zip_file.writestr(f"{key}.txt", value)
-    zip_buffer.seek(0)
-    return zip_buffer
-
-# Generate Game Plan Function
-def generate_game_plan(prompt):
-    st.info("Generating game concept...")
-    game_concept = generate_content(f"Develop an intricate game concept based on the following prompt:\n\n{prompt}\n\nInclude genre, storyline, main characters, and unique gameplay mechanics.", "game development")
-    st.session_state.game_plan['game_concept'] = game_concept
-    add_file_to_global_storage("game_concept.txt", game_concept)
-
-    st.info("Creating game design document...")
-    game_design_doc = generate_content(f"Create a comprehensive game design document for the following game concept:\n\n{game_concept}\n\nInclude detailed descriptions of gameplay mechanics, levels, character abilities, and progression systems.", "game development")
-    st.session_state.game_plan['game_design_document'] = game_design_doc
-    add_file_to_global_storage("game_design_document.txt", game_design_doc)
-
-    st.info("Designing character profiles...")
-    character_profiles = generate_content(f"Develop detailed character profiles for the main characters in the game:\n\n{game_concept}\n\nInclude backstories, personalities, and motivations.", "game development")
-    st.session_state.game_plan['character_profiles'] = character_profiles
-    add_file_to_global_storage("character_profiles.txt", character_profiles)
-
-    st.info("Generating concept art descriptions...")
-    art_descriptions = generate_content(f"Provide detailed descriptions for concept art of key scenes and characters in the game:\n\n{game_concept}", "game development")
-    st.session_state.game_plan['art_descriptions'] = art_descriptions
-    add_file_to_global_storage("art_descriptions.txt", art_descriptions)
-
-    st.info("Generating images...")
-    images = {}
-    descriptions = art_descriptions.split('\n\n')
-    for idx, desc in enumerate(descriptions):
-        image_data = generate_image(desc)
-        if image_data:
-            if isinstance(image_data, bytes):
-                images[f"concept_art_{idx+1}.png"] = image_data
-            else:
-                image_content = requests.get(image_data).content
-                if image_content:
-                    images[f"concept_art_{idx+1}.png"] = image_content
-            add_file_to_global_storage(f"concept_art_{idx+1}.png", images[f"concept_art_{idx+1}.png"])
-            analyze_and_store_image(f"concept_art_{idx+1}.png", images[f"concept_art_{idx+1}.png"])
-    st.session_state.game_plan['images'] = images
-
-    st.info("Compiling all materials into a master document...")
-    master_doc = create_master_document(st.session_state.game_plan)
-    st.session_state.game_plan['master_document'] = master_doc
-    add_file_to_global_storage("game_master_document.txt", master_doc)
-
-    st.success("Game Plan Generated!")
-    st.download_button(
-        label="Download Game Plan ZIP",
-        data=create_zip(st.session_state.game_plan).getvalue(),
-        file_name="game_plan.zip",
-        mime="application/zip"
-    )
-
-# Main function
 def main():
     load_api_keys()
     initialize_global_files()
