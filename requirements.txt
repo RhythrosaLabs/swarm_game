@@ -4,5 +4,6 @@ pillow
 replicate
 numpy
 pandas
-fpdf
 gtts
+streamlit-option-menu
+fpdf
