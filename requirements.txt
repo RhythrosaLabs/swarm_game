@@ -8,3 +8,4 @@ gtts
 moviepy
 numpy
 pandas
+torch
