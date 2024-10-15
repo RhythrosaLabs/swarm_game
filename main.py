@@ -19,9 +19,14 @@ def load_custom_css():
     Loads custom CSS to style the Streamlit app.
     """
     custom_css = """
+    /* Hide Streamlit's default hamburger menu and footer */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    
     /* Sidebar Styling */
-    .css-1aumxhk {
+    .css-1d391kg.egzxvld0 {
         background-color: #2E8B57;
+        color: white;
     }
 
     /* Header Styling */
@@ -37,8 +42,8 @@ def load_custom_css():
     }
 
     /* Progress Bar Styling */
-    .css-1d391kg.egzxvld0 {
-        background-color: #2E8B57;
+    .css-1d391kg.egzxvld0 .stProgress > div > div > div {
+        background-color: #4CAF50;
     }
 
     /* Footer Styling */
