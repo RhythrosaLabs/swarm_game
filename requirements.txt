@@ -12,7 +12,7 @@ moviepy
 openai
 opencv-python
 runwayml
-httpx==0.16.1  # Fixed version to satisfy postgrest-py
+httpx
 
 flask
 midiutil
@@ -28,7 +28,6 @@ dash-bootstrap-components
 PyPDF2
 pytesseract
 pyttsx3
-# supabase-py removed due to dependency conflict
 opencv-python-headless
 pedalboard
 python-docx
