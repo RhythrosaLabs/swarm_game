@@ -10,6 +10,14 @@ from gtts import gTTS
 import replicate
 import time
 from fpdf import FPDF
+import threading
+import base64
+from PyPDF2 import PdfReader
+import cv2
+from stability_sdk import client
+from stability_sdk.animation import AnimationArgs, Animator
+from stability_sdk.utils import create_video_from_frames
+from tqdm import tqdm
 
 # Set page configuration
 st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
@@ -23,6 +31,13 @@ if 'api_keys' not in st.session_state:
         'luma': '',
         'runway': '',
         'clipdrop': ''
+    }
+
+if 'model_selections' not in st.session_state:
+    st.session_state.model_selections = {
+        'image_generation': 'DALL·E',
+        'video_generation': 'Stability AI',
+        'music_generation': 'Replicate'
     }
 
 if 'generated_images' not in st.session_state:
@@ -49,6 +64,9 @@ if 'global_file_storage' not in st.session_state:
 if 'chat_knowledge_base' not in st.session_state:
     st.session_state.chat_knowledge_base = {}
 
+if 'is_generating' not in st.session_state:
+    st.session_state.is_generating = False
+
 # Constants
 GLOBAL_FILES_DIR = "global_files"
 CHAT_API_URL = "https://api.openai.com/v1/chat/completions"
@@ -56,6 +74,7 @@ DALLE_API_URL = "https://api.openai.com/v1/images/generations"
 STABILITY_API_URL = "https://api.stability.ai/v2beta/image-to-video"
 
 # Helper Functions
+
 def load_api_keys():
     if os.path.exists("api_keys.json"):
         with open("api_keys.json", 'r') as file:
@@ -92,7 +111,7 @@ def display_chat_history():
 def generate_content(action, prompt, budget, platforms, api_key):
     headers = get_headers()
     data = {
-        "model": "gpt-4o",
+        "model": "gpt-4",
         "messages": [
             {"role": "system", "content": f"You are a creative assistant specializing in {action}."},
             {"role": "user", "content": f"{prompt}"},
@@ -219,7 +238,6 @@ def generate_image_dalle(api_key, prompt, size="1024x1024", hd=False):
         "Content-Type": "application/json"
     }
     data = {
-        "model": "dall-e",
         "prompt": prompt,
         "n": 1,
         "size": size,
@@ -236,29 +254,24 @@ def generate_image_dalle(api_key, prompt, size="1024x1024", hd=False):
         return None
 
 def generate_image_stability(api_key, prompt, size="512x512"):
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    data = {
-        "text_prompts": [{"text": prompt}],
-        "cfg_scale": 7,
-        "clip_guidance_preset": "FAST_BLUE",
-        "height": int(size.split('x')[1]),
-        "width": int(size.split('x')[0]),
-        "samples": 1,
-        "steps": 30,
-    }
-    try:
-        response = requests.post("https://api.stability.ai/v1/generation/stable-diffusion-xl-beta-v2-2-2/text-to-image", headers=headers, json=data)
-        response.raise_for_status()
-        response_data = response.json()
-        image_base64 = response_data['artifacts'][0]['base64']
-        image_data = base64.b64decode(image_base64)
-        return image_data
-    except Exception as e:
-        st.error(f"Error generating image with Stability AI: {e}")
-        return None
+    stability_api = client.StabilityInference(
+        key=api_key,
+        verbose=True,
+    )
+    answers = stability_api.generate(
+        prompt=prompt,
+        width=int(size.split('x')[0]),
+        height=int(size.split('x')[1]),
+    )
+    for resp in answers:
+        for artifact in resp.artifacts:
+            if artifact.finish_reason == client.FILTER:
+                st.warning("Your request activated the API's safety filters and could not be processed.")
+                return None
+            if artifact.type == client.ARTIFACT_IMAGE:
+                image_data = artifact.binary
+                return image_data
+    return None
 
 def generate_image_replicate(api_key, prompt):
     try:
@@ -298,7 +311,8 @@ def create_gif(images, filter_type=None):
 
 def apply_filter(image, filter_type):
     if filter_type == "sepia":
-        return image.convert("L").convert("RGB")
+        sepia_image = ImageOps.colorize(image.convert("L"), "#704214", "#C0A080")
+        return sepia_image
     elif filter_type == "greyscale":
         return ImageOps.grayscale(image).convert("RGB")
     elif filter_type == "negative":
@@ -321,7 +335,7 @@ def generate_audio_logo(prompt, api_key):
     try:
         replicate_client = replicate.Client(api_token=api_key)
         output_url = replicate_client.run(
-            "meta/musicgen:671ac645ce5e552cc63a54a2bbff63fcf798043055d2dac5fc9e36a837eedcfb",
+            "meta/musicgen",
             input=input_data
         )
         audio_data = requests.get(output_url).content
@@ -337,7 +351,6 @@ def generate_audio_logo(prompt, api_key):
 def generate_video_logo(prompt, api_key):
     headers = get_headers()
     data = {
-        "model": "dall-e",
         "prompt": prompt,
         "n": 1,
         "size": "1024x1024",
@@ -359,7 +372,7 @@ def generate_video_logo(prompt, api_key):
 
     return file_name, file_data
 
-def animate_image_to_video(image_data, prompt):
+def animate_image_to_video(image_file, prompt):
     stability_api_key = st.session_state.api_keys.get("stability")
     if not stability_api_key:
         st.error("Stability AI API Key is required for animating images to video.")
@@ -367,7 +380,7 @@ def animate_image_to_video(image_data, prompt):
 
     url = STABILITY_API_URL
 
-    image = Image.open(BytesIO(image_data))
+    image = Image.open(image_file)
     image = image.resize((768, 768))
 
     buffered = BytesIO()
@@ -414,10 +427,10 @@ def fetch_generated_video(generation_id):
         )
 
         if response.status_code == 202:
-            st.session_state["generation_status"] = "Generation in-progress, trying again in 10 seconds..."
+            st.write("Generation in-progress, trying again in 10 seconds...")
             time.sleep(10)
         elif response.status_code == 200:
-            st.session_state["generation_status"] = "Generation complete!"
+            st.write("Generation complete!")
             return response.content
         else:
             st.error(f"Error fetching video: {response.text}")
@@ -473,7 +486,7 @@ def enhance_content(content, filename):
         content_summary = content
 
     data = {
-        "model": "gpt-4o",
+        "model": "gpt-4",
         "messages": [
             {"role": "system", "content": f"Enhance and summarize the following content from {filename}."},
             {"role": "user", "content": content_summary}
@@ -501,14 +514,442 @@ def initialize_global_files():
     if not os.path.exists(GLOBAL_FILES_DIR):
         os.makedirs(GLOBAL_FILES_DIR)
 
+# New Helper Functions from your code snippets
+
+# Function to display image or video
+def display_media(file_data, col):
+    if file_data:
+        try:
+            if file_data.name.endswith(('.png', '.jpg', '.jpeg')):
+                image = Image.open(file_data)
+                col.image(image, use_column_width=True, caption=file_data.name)
+            elif file_data.name.endswith('.mp4'):
+                col.video(file_data, format="video/mp4")
+        except Exception as e:
+            col.error(f"Error displaying file: {e}")
+
+# Function to encode image to base64
+def encode_image(image_data):
+    return base64.b64encode(image_data).decode('utf-8')
+
+# Function to describe an image using GPT-4
+def describe_image(api_key, image_data):
+    encoded_image = encode_image(image_data)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": "gpt-4",
+        "messages": [
+            {
+                "role": "user",
+                "content": f"What's in this image?\n![image](data:image/jpeg;base64,{encoded_image})"
+            }
+        ],
+        "max_tokens": 1000
+    }
+    response = requests.post(CHAT_API_URL, headers=headers, json=payload)
+    if response.status_code == 200:
+        return response.json()['choices'][0]['message']['content']
+    else:
+        st.error(f"Failed to analyze the image: {response.text}")
+        return None
+
+# Function to analyze text content
+def analyze_text(api_key, text_content):
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": "gpt-4",
+        "messages": [
+            {"role": "user", "content": f"Analyze the following text:\n\n{text_content}"}
+        ],
+        "max_tokens": 1000
+    }
+    response = requests.post(CHAT_API_URL, headers=headers, json=payload)
+    if response.status_code == 200:
+        return response.json()['choices'][0]['message']['content']
+    else:
+        st.error(f"Failed to analyze the text: {response.text}")
+        return None
+
+# Function to extract and analyze content from a zip file
+def analyze_zip(api_key, zip_file):
+    with zipfile.ZipFile(zip_file, 'r') as z:
+        analysis_results = {}
+        for file_info in z.infolist():
+            with z.open(file_info) as f:
+                if file_info.filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    image_data = f.read()
+                    description = describe_image(api_key, image_data)
+                    analysis_results[file_info.filename] = description
+                elif file_info.filename.lower().endswith('.txt'):
+                    text_content = f.read().decode('utf-8')
+                    analysis_results[file_info.filename] = analyze_text(api_key, text_content)
+                elif file_info.filename.lower().endswith('.csv'):
+                    df = pd.read_csv(f)
+                    analysis_results[file_info.filename] = df.to_string()
+                elif file_info.filename.lower().endswith('.pdf'):
+                    reader = PdfReader(f)
+                    text_content = ""
+                    for page in reader.pages:
+                        text_content += page.extract_text()
+                    analysis_results[file_info.filename] = analyze_text(api_key, text_content)
+    return analysis_results
+
+# Function to stitch frames to video
+def stitch_frames_to_video(frames_directory, output_filename, fps):
+    frames = []
+    frame_files = os.listdir(frames_directory)
+
+    def try_parse_int(s, base=10, val=None):
+        try:
+            return int(s, base)
+        except ValueError:
+            return val
+
+    frame_files.sort(key=lambda x: try_parse_int(x.split('_')[1].split('.')[0], val=float('inf')))
+
+    for filename in frame_files:
+        if filename.endswith('.png') or filename.endswith('.jpg'):
+            frames.append(cv2.imread(os.path.join(frames_directory, filename)))
+    height, width, _ = frames[0].shape
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    video_writer = cv2.VideoWriter(output_filename, fourcc, fps, (width, height))
+    for frame in frames:
+        video_writer.write(frame)
+    video_writer.release()
+
+# Function to generate video from text
+def generate_video_from_text(api_key, prompts, settings, output_dir):
+    context = client.StabilityInference(
+        key=api_key,
+        verbose=True,
+    )
+
+    args = AnimationArgs()
+    args.interpolate_prompts = True
+    args.locked_seed = settings.get('locked_seed', True)
+    args.max_frames = settings.get('animation_length', 120)
+    args.seed = settings.get('seed', 42)
+    args.strength_curve = settings.get('strength_curve', "0:(0)")
+    args.diffusion_cadence_curve = settings.get('diffusion_cadence_curve', "0:(4)")
+    args.cadence_interp = settings.get('cadence_interp', "film")
+
+    animation_prompts = prompts
+    negative_prompt = settings.get('negative_prompt', "")
+
+    animator = Animator(
+        api_context=context,
+        animation_prompts=animation_prompts,
+        negative_prompt=negative_prompt,
+        args=args,
+        out_dir=output_dir
+    )
+
+    for _ in tqdm(animator.render(), total=args.max_frames):
+        pass
+
+    create_video_from_frames(animator.out_dir, os.path.join(output_dir, "video.mp4"), fps=settings.get('fps', 12))
+
+    return os.path.join(output_dir, "video.mp4")
+
+# Function to generate video in a separate thread
+def threaded_generate_video(prompts, settings, video_label):
+    st.session_state["is_generating"] = True
+    api_key = st.session_state.api_keys.get("stability")
+    if not api_key:
+        st.error("Stability AI API Key is required for video generation.")
+        return
+
+    output_dir = "generated_videos"
+    os.makedirs(output_dir, exist_ok=True)
+
+    try:
+        video_path = generate_video_from_text(api_key, prompts, settings, output_dir)
+        st.session_state["generated_video"] = video_path
+        video_label.video(video_path)
+    except Exception as e:
+        st.error(f"Error generating video: {e}")
+    finally:
+        st.session_state["is_generating"] = False
+
+# Function to initiate video generation
+def generate_video(prompts, settings, video_label):
+    thread = threading.Thread(target=threaded_generate_video, args=(prompts, settings, video_label))
+    thread.start()
+
+# Tabs
+
+def edit_videos_tab():
+    st.title("🎞️ Edit Videos")
+
+    # Upload section
+    uploaded_file = st.file_uploader("Upload Image", type=["png", "jpg", "jpeg"], key="upload_image_file")
+    if uploaded_file:
+        add_file_to_global_storage(uploaded_file.name, uploaded_file)
+
+    # Text input for the prompt
+    prompt = st.text_area("Enter prompt for video generation:", key="image_prompt_unique")
+
+    # Display section
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if uploaded_file:
+            display_media(uploaded_file, col1)
+            if uploaded_file.name.endswith(('.png', '.jpg', '.jpeg')):
+                animate_button = st.button("Animate", key="animate_button")
+                if animate_button:
+                    with st.spinner("Animating..."):
+                        generation_id = animate_image_to_video(uploaded_file, prompt)
+                        if generation_id:
+                            video_data = fetch_generated_video(generation_id)
+                            if video_data:
+                                st.session_state["generated_video"] = BytesIO(video_data)
+
+    with col2:
+        if "generated_video" in st.session_state:
+            generated_file = st.session_state["generated_video"]
+            col2.video(generated_file, format="video/mp4")
+
+def multimedia_analysis_tab():
+    st.title("🖼️ Multimedia Analysis with GPT-4")
+
+    # API Key Input
+    api_key = st.session_state.api_keys.get("openai")
+    if not api_key:
+        st.error("OpenAI API key is required. Please set it in the sidebar.")
+        return
+
+    # File Upload
+    uploaded_file = st.file_uploader("Upload a file (Image, Text, Zip)", type=["png", "jpg", "jpeg", "txt", "csv", "pdf", "zip"])
+
+    if uploaded_file:
+        file_type = uploaded_file.type
+        file_name = uploaded_file.name
+
+        if file_type in ["image/png", "image/jpeg"]:
+            description = describe_image(api_key, uploaded_file.read())
+            st.write(f"Description for {file_name}:")
+            st.write(description)
+        elif file_type == "text/plain":
+            text_content = uploaded_file.read().decode('utf-8')
+            analysis = analyze_text(api_key, text_content)
+            st.write(f"Analysis for {file_name}:")
+            st.write(analysis)
+        elif file_type == "application/zip":
+            analysis_results = analyze_zip(api_key, uploaded_file)
+            for file, analysis in analysis_results.items():
+                st.write(f"Analysis for {file}:")
+                st.write(analysis)
+        else:
+            st.error("Unsupported file type.")
+
+def text_to_video_tab():
+    st.title("🎥 Text to Video")
+
+    prompt_fields = {
+        "start": st.text_input("Start Animation Prompt", key="start_animation_prompt"),
+        "mid1": st.text_input("Mid Animation Prompt 1", key="mid_animation_prompt1"),
+        "mid2": st.text_input("Mid Animation Prompt 2", key="mid_animation_prompt2"),
+        "mid3": st.text_input("Mid Animation Prompt 3", key="mid_animation_prompt3"),
+        "end": st.text_input("End Animation Prompt", key="end_animation_prompt")
+    }
+
+    frame_fields = {
+        "start_frame": st.number_input("Start Frame", min_value=0, value=0, key="start_frame"),
+        "mid_frame1": st.number_input("Mid Frame 1", min_value=0, value=30, key="mid_frame1"),
+        "mid_frame2": st.number_input("Mid Frame 2", min_value=0, value=60, key="mid_frame2"),
+        "mid_frame3": st.number_input("Mid Frame 3", min_value=0, value=90, key="mid_frame3"),
+        "end_frame": st.number_input("End Frame", min_value=0, value=120, key="end_frame")
+    }
+
+    settings_fields = {
+        "animation_length": st.number_input("Animation Length (frames)", min_value=1, value=120, key="animation_length"),
+        "fps": st.number_input("Frames per Second", min_value=1, value=12, key="fps"),
+        "seed": st.number_input("Seed", value=42, key="seed"),
+        "translation_x": st.text_input("Translation X", value="0:(0)", key="translation_x"),
+        "translation_y": st.text_input("Translation Y", value="0:(0)", key="translation_y"),
+        "translation_z": st.text_input("Translation Z", value="0:(0)", key="translation_z"),
+        "preset": st.selectbox("Preset", ["default", "cinematic", "artistic"], key="preset"),
+        "negative_prompt": st.text_input("Negative Prompt", value="nudity, naked, violence, blood, horror, watermark, logo, sex, guns", key="negative_prompt")
+    }
+
+    if st.button("Generate Video"):
+        prompts = {
+            frame_fields["start_frame"]: prompt_fields["start"],
+            frame_fields["mid_frame1"]: prompt_fields["mid1"],
+            frame_fields["mid_frame2"]: prompt_fields["mid2"],
+            frame_fields["mid_frame3"]: prompt_fields["mid3"],
+            frame_fields["end_frame"]: prompt_fields["end"]
+        }
+        settings = {key: settings_fields[key] for key in settings_fields}
+        video_label = st.empty()
+        with st.spinner("Generating video. Video in process..."):
+            generate_video(prompts, settings, video_label)
+
+def comic_book_generation_tab():
+    st.title("📚 Comic Book Generation")
+
+    api_key = st.session_state.api_keys.get("openai")
+    if not api_key:
+        st.error("OpenAI API key is required. Please set it in the sidebar.")
+        return
+
+    prompt = st.text_area("Enter the story or idea for your comic book:")
+
+    if st.button("Generate Comic Book"):
+        with st.spinner("Generating comic book..."):
+            comic_content = generate_content("comic book script", prompt, "", {}, api_key)
+            st.write("Comic Book Content:")
+            st.write(comic_content)
+            add_file_to_global_storage("comic_book.txt", comic_content)
+
+def game_development_tab():
+    st.title("🎮 Game Development Automation")
+
+    api_key = st.session_state.api_keys.get("openai")
+    if not api_key:
+        st.error("OpenAI API key is required. Please set it in the sidebar.")
+        return
+
+    prompt = st.text_area("Enter your game idea or concept:")
+
+    if st.button("Generate Game Plan"):
+        with st.spinner("Generating game plan..."):
+            game_plan = generate_content("game development plan", prompt, "", {}, api_key)
+            st.write("Game Development Plan:")
+            st.write(game_plan)
+            add_file_to_global_storage("game_plan.txt", game_plan)
+
+def business_plan_tab():
+    st.title("📈 Business Plan Automation")
+
+    api_key = st.session_state.api_keys.get("openai")
+    if not api_key:
+        st.error("OpenAI API key is required. Please set it in the sidebar.")
+        return
+
+    prompt = st.text_area("Describe your business idea:")
+
+    if st.button("Generate Business Plan"):
+        with st.spinner("Generating business plan..."):
+            business_plan = generate_content("business plan", prompt, "", {}, api_key)
+            st.write("Business Plan:")
+            st.write(business_plan)
+            add_file_to_global_storage("business_plan.txt", business_plan)
+
+def media_generation_tab():
+    st.header("🎬 Media Generation")
+    st.write("Generate images, videos, and music using AI models.")
+
+    media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation", "Music Generation"])
+
+    if media_type == "Image Generation":
+        st.subheader("Image Generation")
+
+        image_prompt = st.text_area("Enter an image prompt:")
+        image_model = st.session_state.model_selections.get('image_generation', 'DALL·E')
+        image_size = st.selectbox("Select Image Size", ["256x256", "512x512", "1024x1024"])
+        hd_images = st.checkbox("Generate HD images")
+
+        if st.button("Generate Image"):
+            image_data = generate_images(st.session_state.api_keys['openai'], [image_prompt], [image_size], image_model, hd_images)
+            if image_data:
+                image_bytes = list(image_data.values())[0]
+                if image_bytes:
+                    st.image(image_bytes, caption="Generated Image")
+                    add_file_to_global_storage(f"{image_prompt.replace(' ', '_')}.png", image_bytes)
+
+    elif media_type == "Video Generation":
+        st.subheader("Video Generation")
+
+        video_prompt = st.text_area("Enter a video prompt:")
+        video_model = st.session_state.model_selections.get('video_generation', 'Stability AI')
+        if video_model == "Stability AI":
+            stability_api_key = st.session_state.api_keys.get("stability")
+            if not stability_api_key:
+                st.warning("Stability AI API Key is required for video generation.")
+            else:
+                if st.button("Generate Video"):
+                    image_url = generate_image_dalle(st.session_state.api_keys['openai'], video_prompt)
+                    if image_url:
+                        image_data = download_image(image_url)
+                        if image_data:
+                            generation_id = animate_image_to_video(BytesIO(image_data), video_prompt)
+                            if generation_id:
+                                video_data = fetch_generated_video(generation_id)
+                                if video_data:
+                                    st.video(video_data)
+                                    add_file_to_global_storage(f"{video_prompt.replace(' ', '_')}.mp4", video_data)
+        elif video_model == "RunwayML":
+            st.info("RunwayML integration is coming soon.")
+
+    elif media_type == "Music Generation":
+        st.subheader("Music Generation")
+
+        music_prompt = st.text_area("Enter a music prompt:")
+        music_model = st.session_state.model_selections.get('music_generation', 'Replicate')
+        if st.button("Generate Music"):
+            replicate_api_key = st.session_state.api_keys.get("replicate")
+            if not replicate_api_key:
+                st.warning("Replicate API Key is required for music generation.")
+            else:
+                file_name, music_data = generate_audio_logo(music_prompt, replicate_api_key)
+                if music_data:
+                    st.audio(music_data)
+                    add_file_to_global_storage(file_name, music_data)
+
+def custom_workflows_tab():
+    st.header("📂 Custom Workflows")
+    st.write("Create custom automated workflows.")
+    if "workflow_steps" not in st.session_state:
+        st.session_state["workflow_steps"] = []
+
+    def add_step():
+        st.session_state["workflow_steps"].append({"prompt": "", "file_name": "", "file_data": None})
+
+    if st.button("Add Step"):
+        add_step()
+
+    for i, step in enumerate(st.session_state["workflow_steps"]):
+        st.write(f"Step {i + 1}")
+        step["prompt"] = st.text_input(f"Prompt for step {i + 1}", key=f"prompt_{i}")
+        if st.button("Remove Step", key=f"remove_step_{i}"):
+            st.session_state["workflow_steps"].pop(i)
+            st.experimental_rerun()
+
+    if st.button("Generate All Files"):
+        for i, step in enumerate(st.session_state["workflow_steps"]):
+            if step["prompt"]:
+                file_name, file_data = generate_file_with_gpt(step["prompt"])
+                if file_name and file_data:
+                    step["file_name"] = file_name
+                    step["file_data"] = file_data
+                    st.success(f"File for step {i + 1} generated: {file_name}")
+                    add_file_to_global_storage(file_name, file_data)
+            else:
+                st.warning(f"Prompt for step {i + 1} is empty.")
+
+    if st.button("Download Workflow Files as ZIP"):
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w') as zipf:
+            for step in st.session_state["workflow_steps"]:
+                if step["file_data"]:
+                    zipf.writestr(step["file_name"], step["file_data"])
+        zip_buffer.seek(0)
+        st.download_button(
+            label="Download ZIP",
+            data=zip_buffer.getvalue(),
+            file_name="workflow_files.zip",
+            mime="application/zip"
+        )
+
 def file_management_tab():
-    st.title("📂 File Management")
+    st.title("📁 File Management")
 
     uploaded_file = st.file_uploader("Upload a file")
     if uploaded_file is not None:
         file_data = uploaded_file.read()
         add_file_to_global_storage(uploaded_file.name, file_data)
-        analyze_and_store_file(uploaded_file.name, file_data)
         st.success(f"Uploaded {uploaded_file.name}")
 
     st.subheader("Generate File")
@@ -550,211 +991,59 @@ def file_management_tab():
         for file_name, file_data in files.items():
             st.write(f"{file_name}: {len(file_data)} bytes")
 
-def generate_marketing_campaign_tab():
-    st.title("🧠 Generate Marketing Campaign")
+def create_zip_of_global_files():
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zipf:
+        for file_name, file_data in st.session_state["global_file_storage"].items():
+            zipf.writestr(file_name, file_data)
+    zip_buffer.seek(0)
+    return zip_buffer
 
-    api_key = st.session_state.api_keys.get("openai")
-    replicate_api_key = st.session_state.api_keys.get("replicate", None)
+def generate_file_with_gpt(prompt):
+    api_keys = st.session_state.api_keys
+    openai_api_key = api_keys.get("openai")
 
-    if not api_key:
-        st.warning("Please provide a valid OpenAI API Key.")
-        return
+    if not openai_api_key:
+        st.error("OpenAI API key is not set. Please add it in the sidebar.")
+        return None, None
 
-    prompt = st.text_area("Prompt", "Describe your product or campaign...")
+    specific_prompt = f"Please generate the following file content without any explanations or additional text:\n{prompt}"
 
-    budget = st.text_input("Budget", "1000")
+    headers = {
+        "Authorization": f"Bearer {openai_api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "gpt-4",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": specific_prompt}
+        ],
+        "max_tokens": 1000,
+        "temperature": 0.7
+    }
 
-    with st.expander("Advanced Options"):
-        st.subheader("Social Media Platforms")
-        platforms = {
-            "facebook": st.checkbox("Facebook"),
-            "twitter": st.checkbox("Twitter", value=True),
-            "instagram": st.checkbox("Instagram"),
-            "linkedin": st.checkbox("LinkedIn")
-        }
+    try:
+        response = requests.post(CHAT_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        generated_text = response_data['choices'][0]['message']['content']
 
-        st.subheader("Image Tools")
-        bypass_images = st.checkbox("Bypass image generation", value=True)
+        generated_text = generated_text.strip()
 
-        image_size_options = {
-            "Wide": "1792x1024",
-            "Tall": "1024x1792",
-            "Square": "1024x1024"
-        }
+    except requests.RequestException as e:
+        st.error(f"Error generating file: {e}")
+        return None, None
 
-        if not bypass_images:
-            if "image_prompts" not in st.session_state:
-                st.session_state["image_prompts"] = [""]
-                st.session_state["image_sizes"] = ["Square"]
-                st.session_state["image_models"] = ["DALL·E"]
+    file_extension = ".txt"
+    file_name = prompt.replace(" ", "_") + file_extension
+    file_data = generated_text.encode("utf-8")
 
-            for i in range(len(st.session_state["image_prompts"])):
-                cols = st.columns([3, 1, 1, 1])
-                with cols[0]:
-                    st.session_state["image_prompts"][i] = st.text_input(f"Image {i+1} Prompt:", st.session_state["image_prompts"][i], key=f"image_prompt_{i}")
-                with cols[1]:
-                    st.session_state["image_sizes"][i] = st.selectbox(f"Size {i+1}:", options=list(image_size_options.keys()), index=["Wide", "Tall", "Square"].index(st.session_state["image_sizes"][i]), key=f"image_size_{i}")
-                with cols[2]:
-                    st.session_state["image_models"][i] = st.selectbox(f"Model {i+1}:", ["DALL·E", "Stable Diffusion", "Replicate"], key=f"image_model_{i}")
-                with cols[3]:
-                    if st.button("➖", key=f"remove_image_{i}"):
-                        st.session_state["image_prompts"].pop(i)
-                        st.session_state["image_sizes"].pop(i)
-                        st.session_state["image_models"].pop(i)
-                        st.experimental_rerun()
-
-            if len(st.session_state["image_prompts"]) < 5:
-                if st.button("➕ Add Image"):
-                    st.session_state["image_prompts"].append("")
-                    st.session_state["image_sizes"].append("Square")
-                    st.session_state["image_models"].append("DALL·E")
-
-            hd_images = st.checkbox("Generate HD images")
-
-            create_gif_checkbox = st.checkbox("Create GIF from images", value=False)
-            filter_type = st.selectbox("Select GIF Filter:", ["None", "Sepia", "Greyscale", "Negative", "Solarize", "Posterize"])
-            filter_type = filter_type.lower() if filter_type != "None" else None
-
-        st.subheader("Other Settings")
-        add_audio_logo = st.checkbox("Add audio logo")
-        add_video_logo = st.checkbox("Add video logo")
-
-    if st.button("Generate Marketing Campaign"):
-        with st.spinner("Generating..."):
-            campaign_plan = {}
-
-            # Generate and analyze campaign concept
-            st.info("Generating campaign concept...")
-            campaign_concept = generate_content("campaign concept", prompt, budget, platforms, api_key)
-            campaign_plan['campaign_concept'] = campaign_concept
-            add_file_to_global_storage("campaign_concept.txt", campaign_concept)
-
-            st.info("Analyzing campaign concept...")
-            analyzed_concept = enhance_content(campaign_concept, "Campaign Concept")
-            add_to_chat_knowledge_base("Campaign Concept", analyzed_concept)
-            add_file_to_global_storage("analyzed_campaign_concept.txt", analyzed_concept)
-
-            # Generate and analyze marketing plan
-            st.info("Generating marketing plan...")
-            marketing_plan = generate_content("marketing plan", prompt, budget, platforms, api_key)
-            campaign_plan['marketing_plan'] = marketing_plan
-            add_file_to_global_storage("marketing_plan.txt", marketing_plan)
-
-            st.info("Analyzing marketing plan...")
-            analyzed_plan = enhance_content(marketing_plan, "Marketing Plan")
-            add_to_chat_knowledge_base("Marketing Plan", analyzed_plan)
-            add_file_to_global_storage("analyzed_marketing_plan.txt", analyzed_plan)
-
-            # Generate and analyze budget spreadsheet
-            st.info("Generating budget spreadsheet...")
-            budget_spreadsheet = generate_budget_spreadsheet(budget)
-            campaign_plan['budget_spreadsheet'] = budget_spreadsheet
-            add_file_to_global_storage("budget_spreadsheet.xlsx", budget_spreadsheet)
-
-            st.info("Analyzing budget spreadsheet...")
-            analyzed_budget = enhance_content(budget_spreadsheet, "Budget Spreadsheet")
-            add_to_chat_knowledge_base("Budget Spreadsheet", analyzed_budget)
-            add_file_to_global_storage("analyzed_budget_spreadsheet.txt", analyzed_budget)
-
-            # Generate and analyze social media schedule
-            st.info("Generating social media schedule...")
-            social_media_schedule = generate_social_media_schedule(campaign_concept, platforms)
-            campaign_plan['social_media_schedule'] = social_media_schedule
-            add_file_to_global_storage("social_media_schedule.xlsx", social_media_schedule)
-
-            st.info("Analyzing social media schedule...")
-            analyzed_schedule = enhance_content(social_media_schedule, "Social Media Schedule")
-            add_to_chat_knowledge_base("Social Media Schedule", analyzed_schedule)
-            add_file_to_global_storage("analyzed_social_media_schedule.txt", analyzed_schedule)
-
-            # Generate images if not bypassed
-            if not bypass_images:
-                st.info("Generating images...")
-                custom_prompts = st.session_state["image_prompts"]
-                image_sizes = [image_size_options[size] for size in st.session_state["image_sizes"]]
-                image_models = st.session_state["image_models"]
-                images = {}
-                for idx, (prompt_text, size, model_name) in enumerate(zip(custom_prompts, image_sizes, image_models)):
-                    image_data = generate_images(api_key, [prompt_text], [size], model_name, hd_images)
-                    images.update(image_data)
-
-                campaign_plan['images'] = images
-
-                for image_key, image_data in images.items():
-                    st.info(f"Analyzing {image_key}...")
-                    analyzed_image = enhance_content(image_data, image_key)
-                    add_to_chat_knowledge_base(image_key, analyzed_image)
-                    add_file_to_global_storage(image_key, image_data)
-
-                if create_gif_checkbox and images:
-                    st.info("Creating GIF...")
-                    gif_data = create_gif(images, filter_type)
-                    campaign_plan['images']['animated_gif.gif'] = gif_data.getvalue()
-                    add_file_to_global_storage("animated_gif.gif", gif_data.getvalue())
-
-            # Generate audio logo if selected and replicate API key is provided
-            if add_audio_logo:
-                if replicate_api_key:
-                    st.info("Generating audio logo...")
-                    audio_prompt = f"Generate an audio logo for the following campaign concept: {campaign_concept}"
-                    file_name, audio_data = generate_audio_logo(audio_prompt, replicate_api_key)
-                    if audio_data:
-                        campaign_plan['audio_logo'] = audio_data
-                        add_file_to_global_storage(file_name, audio_data)
-                else:
-                    st.warning("Replicate API Key is required to generate an audio logo.")
-
-            # Generate video logo if selected
-            if add_video_logo:
-                st.info("Generating video logo...")
-                video_prompt = f"Generate a video logo for the following campaign concept: {campaign_concept}"
-                file_name, video_logo_data = generate_video_logo(video_prompt, api_key)
-                if video_logo_data:
-                    st.info("Animating video logo...")
-                    generation_id = animate_image_to_video(video_logo_data, video_prompt)
-                    if generation_id:
-                        video_data = fetch_generated_video(generation_id)
-                        if video_data:
-                            campaign_plan['video_logo'] = video_data
-                            add_file_to_global_storage("video_logo.mp4", video_data)
-
-            # Generate and analyze resources and tips
-            st.info("Generating resources and tips...")
-            resources_tips = generate_content("resources and tips", prompt, budget, platforms, api_key)
-            campaign_plan['resources_tips'] = resources_tips
-            add_file_to_global_storage("resources_tips.txt", resources_tips)
-
-            st.info("Analyzing resources and tips...")
-            analyzed_resources = enhance_content(resources_tips, "Resources and Tips")
-            add_to_chat_knowledge_base("Resources and Tips", analyzed_resources)
-            add_file_to_global_storage("analyzed_resources_tips.txt", analyzed_resources)
-
-            # Generate and analyze recap
-            st.info("Generating recap...")
-            recap = generate_content("recap", prompt, budget, platforms, api_key)
-            campaign_plan['recap'] = recap
-            add_file_to_global_storage("recap.txt", recap)
-
-            st.info("Analyzing recap...")
-            analyzed_recap = enhance_content(recap, "Recap")
-            add_to_chat_knowledge_base("Recap", analyzed_recap)
-            add_file_to_global_storage("analyzed_recap.txt", analyzed_recap)
-
-            st.info("Generating master document...")
-            master_document = create_master_document(campaign_plan)
-            campaign_plan['master_document'] = master_document
-            add_file_to_global_storage("master_document.txt", master_document)
-
-            st.info("Packaging into ZIP...")
-            zip_data = create_zip(campaign_plan)
-
-            st.session_state.campaign_plan = campaign_plan
-            st.success("Marketing Campaign Generated")
-            st.download_button(label="Download ZIP", data=zip_data.getvalue(), file_name="marketing_campaign.zip", key="download_campaign_zip")
+    return file_name, file_data
 
 def sidebar():
     with st.sidebar:
-        tab = st.radio("Sidebar", ["🔑 API Keys", "💬 Chat"], key="sidebar_tab")
+        tab = st.radio("Sidebar", ["🔑 API Keys", "⚙️ Model Selections", "💬 Chat"], key="sidebar_tab")
 
         if tab == "🔑 API Keys":
             st.header("🔑 API Keys")
@@ -773,6 +1062,16 @@ def sidebar():
                 st.session_state.api_keys['clipdrop'] = st.session_state.clipdrop_api_key
                 save_api_keys()
                 st.success("API Keys saved successfully!")
+        elif tab == "⚙️ Model Selections":
+            st.header("⚙️ Model Selections")
+            st.selectbox("Image Generation Model", ["DALL·E", "Stable Diffusion", "Replicate"], key="image_generation_model")
+            st.selectbox("Video Generation Model", ["Stability AI", "RunwayML"], key="video_generation_model")
+            st.selectbox("Music Generation Model", ["Replicate"], key="music_generation_model")
+            if st.button("💾 Save Model Selections"):
+                st.session_state.model_selections['image_generation'] = st.session_state.image_generation_model
+                st.session_state.model_selections['video_generation'] = st.session_state.video_generation_model
+                st.session_state.model_selections['music_generation'] = st.session_state.music_generation_model
+                st.success("Model selections saved successfully!")
         elif tab == "💬 Chat":
             st.header("💬 Chat Assistant")
 
@@ -824,7 +1123,7 @@ def sidebar():
             display_chat_history()
 
 def chat_with_gpt(prompt, uploaded_files):
-    model = 'gpt-4o'
+    model = 'gpt-4'
     headers = get_headers()
     openai_api_key = st.session_state.api_keys.get('openai')
 
@@ -880,121 +1179,44 @@ def load_preset_bots():
         return {}
 
 def main_tabs():
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "🧠 AI Content Generation",
         "🎬 Media Generation",
         "📂 Custom Workflows",
-        "📁 File Management"
+        "📁 File Management",
+        "🎞️ Edit Videos",
+        "🖼️ Multimedia Analysis",
+        "📚 Comic Book Generation",
+        "🎮 Game Development",
+        "📈 Business Plan Automation"
     ])
 
     with tab1:
         generate_marketing_campaign_tab()
 
     with tab2:
-        st.header("🎬 Media Generation")
-        st.write("Generate images, videos, and music using AI models.")
-
-        media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation", "Music Generation"])
-
-        if media_type == "Image Generation":
-            st.subheader("Image Generation")
-
-            image_prompt = st.text_area("Enter an image prompt:")
-            image_model = st.selectbox("Select Image Model", ["DALL·E", "Stable Diffusion", "Replicate"])
-            image_size = st.selectbox("Select Image Size", ["256x256", "512x512", "1024x1024"])
-            hd_images = st.checkbox("Generate HD images")
-
-            if st.button("Generate Image"):
-                image_data = generate_images(st.session_state.api_keys['openai'], [image_prompt], [image_size], image_model, hd_images)
-                if image_data:
-                    image_bytes = list(image_data.values())[0]
-                    if image_bytes:
-                        st.image(image_bytes, caption="Generated Image")
-                        add_file_to_global_storage(f"{image_prompt.replace(' ', '_')}.png", image_bytes)
-
-        elif media_type == "Video Generation":
-            st.subheader("Video Generation")
-
-            video_prompt = st.text_area("Enter a video prompt:")
-            video_model = st.selectbox("Select Video Model", ["Stability AI", "RunwayML"])
-            if video_model == "Stability AI":
-                stability_api_key = st.session_state.api_keys.get("stability")
-                if not stability_api_key:
-                    st.warning("Stability AI API Key is required for video generation.")
-                else:
-                    if st.button("Generate Video"):
-                        image_data = generate_image_dalle(st.session_state.api_keys['openai'], video_prompt)
-                        if image_data:
-                            generation_id = animate_image_to_video(image_data, video_prompt)
-                            if generation_id:
-                                video_data = fetch_generated_video(generation_id)
-                                if video_data:
-                                    st.video(video_data)
-                                    add_file_to_global_storage(f"{video_prompt.replace(' ', '_')}.mp4", video_data)
-            elif video_model == "RunwayML":
-                st.info("RunwayML integration is coming soon.")
-
-        elif media_type == "Music Generation":
-            st.subheader("Music Generation")
-
-            music_prompt = st.text_area("Enter a music prompt:")
-            if st.button("Generate Music"):
-                replicate_api_key = st.session_state.api_keys.get("replicate")
-                if not replicate_api_key:
-                    st.warning("Replicate API Key is required for music generation.")
-                else:
-                    file_name, music_data = generate_audio_logo(music_prompt, replicate_api_key)
-                    if music_data:
-                        st.audio(music_data)
-                        add_file_to_global_storage(file_name, music_data)
+        media_generation_tab()
 
     with tab3:
-        st.header("📂 Custom Workflows")
-        st.write("Create custom automated workflows.")
-        if "workflow_steps" not in st.session_state:
-            st.session_state["workflow_steps"] = []
-
-        def add_step():
-            st.session_state["workflow_steps"].append({"prompt": "", "file_name": "", "file_data": None})
-
-        if st.button("Add Step"):
-            add_step()
-
-        for i, step in enumerate(st.session_state["workflow_steps"]):
-            st.write(f"Step {i + 1}")
-            step["prompt"] = st.text_input(f"Prompt for step {i + 1}", key=f"prompt_{i}")
-            if st.button("Remove Step", key=f"remove_step_{i}"):
-                st.session_state["workflow_steps"].pop(i)
-                st.experimental_rerun()
-
-        if st.button("Generate All Files"):
-            for i, step in enumerate(st.session_state["workflow_steps"]):
-                if step["prompt"]:
-                    file_name, file_data = generate_file_with_gpt(step["prompt"])
-                    if file_name and file_data:
-                        step["file_name"] = file_name
-                        step["file_data"] = file_data
-                        st.success(f"File for step {i + 1} generated: {file_name}")
-                        add_file_to_global_storage(file_name, file_data)
-                else:
-                    st.warning(f"Prompt for step {i + 1} is empty.")
-
-        if st.button("Download Workflow Files as ZIP"):
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w') as zipf:
-                for step in st.session_state["workflow_steps"]:
-                    if step["file_data"]:
-                        zipf.writestr(step["file_name"], step["file_data"])
-            zip_buffer.seek(0)
-            st.download_button(
-                label="Download ZIP",
-                data=zip_buffer.getvalue(),
-                file_name="workflow_files.zip",
-                mime="application/zip"
-            )
+        custom_workflows_tab()
 
     with tab4:
         file_management_tab()
+
+    with tab5:
+        edit_videos_tab()
+
+    with tab6:
+        multimedia_analysis_tab()
+
+    with tab7:
+        comic_book_generation_tab()
+
+    with tab8:
+        game_development_tab()
+
+    with tab9:
+        business_plan_tab()
 
 def main():
     load_api_keys()
