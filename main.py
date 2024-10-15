@@ -10,9 +10,9 @@ import replicate
 import base64
 import numpy as np
 import pandas as pd
-import traceback
 from fpdf import FPDF
 from gtts import gTTS
+import threading
 
 # Set page configuration
 st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
@@ -107,7 +107,7 @@ def generate_content(prompt, role):
         st.error(f"Error generating content: {e}")
         return None
 
-def generate_image(prompt, size="1024x1024"):
+def generate_image(prompt, size="512x512"):
     model = st.session_state.get('selected_image_model', 'dall-e')
     if model == 'dall-e':
         headers = get_headers('openai')
@@ -126,8 +126,39 @@ def generate_image(prompt, size="1024x1024"):
         except Exception as e:
             st.error(f"Error generating image: {e}")
             return None
+    elif model == 'stable-diffusion':
+        stability_api_key = st.session_state.api_keys.get('stability')
+        if not stability_api_key:
+            st.error("Stability AI API key is not set.")
+            return None
+        return generate_image_with_stability(prompt, size)
     else:
         st.error("Selected image model is not supported yet.")
+        return None
+
+def generate_image_with_stability(prompt, size):
+    headers = {
+        "Authorization": f"Bearer {st.session_state.api_keys['stability']}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "text_prompts": [{"text": prompt}],
+        "cfg_scale": 7,
+        "clip_guidance_preset": "FAST_BLUE",
+        "height": int(size.split('x')[1]),
+        "width": int(size.split('x')[0]),
+        "samples": 1,
+        "steps": 30,
+    }
+    try:
+        response = requests.post("https://api.stability.ai/v1/generation/stable-diffusion-xl-beta-v2-2-2/text-to-image", headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        image_base64 = response_data['artifacts'][0]['base64']
+        image_data = base64.b64decode(image_base64)
+        return image_data
+    except Exception as e:
+        st.error(f"Error generating image with Stability AI: {e}")
         return None
 
 def download_image(image_url):
@@ -144,39 +175,22 @@ def display_image(image_data, caption):
     st.image(image, caption=caption, use_column_width=True)
 
 def generate_audio_logo(prompt):
-    model = st.session_state.get('selected_music_model', 'replicate')
-    if model == 'replicate':
-        replicate_api_key = st.session_state.api_keys['replicate']
-        if not replicate_api_key:
-            st.warning("Replicate API Key is required for audio generation.")
-            return None, None
-        try:
-            client = replicate.Client(api_token=replicate_api_key)
-            output_url = client.run(
-                "meta/musicgen:6c4ba543e2d36e8eecff0e36e5902bd6f1713c3e7944d0fb294ed4187add6ad2",
-                input={"prompt": prompt}
-            )
-            audio_data = requests.get(output_url).content
-            file_name = f"{prompt.replace(' ', '_')}.mp3"
-            return file_name, audio_data
-        except Exception as e:
-            st.error(f"Error generating audio: {e}")
-            return None, None
+    model = st.session_state.get('selected_music_model', 'meta-musicgen')
+    if model == 'meta-musicgen':
+        return generate_music_with_replicate(prompt)
     else:
         st.error("Selected music model is not supported yet.")
         return None, None
 
 def generate_video_logo(prompt):
-    model = st.session_state.get('selected_video_model', 'placeholder')
-    if model == 'placeholder':
-        image_url = generate_image(prompt)
-        if image_url:
-            image_data = download_image(image_url)
-            if image_data:
-                # Placeholder for video generation using the image
-                file_name = f"{prompt.replace(' ', '_')}.mp4"
-                # Implement video generation logic here
-                return file_name, image_data  # Replace image_data with actual video data
+    model = st.session_state.get('selected_video_model', 'luma-ai')
+    if model == 'luma-ai':
+        luma_api_key = st.session_state.api_keys.get('luma')
+        if not luma_api_key:
+            st.error("Luma AI API key is not set.")
+            return None, None
+        # Placeholder for Luma AI video generation
+        st.info("Luma AI video generation is not yet implemented.")
         return None, None
     else:
         st.error("Selected video model is not supported yet.")
@@ -222,7 +236,7 @@ def encode_image(image_data):
 def describe_image(api_key, base64_image):
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     data = {
-        "model": "gpt-4",
+        "model": "gpt-4-vision",
         "messages": [
             {"role": "user", "content": f"Describe the following image: data:image/jpeg;base64,{base64_image}"}
         ]
@@ -264,14 +278,17 @@ def generate_file_with_gpt(prompt):
 
     if prompt.startswith("/image "):
         specific_prompt = prompt.replace("/image ", "").strip()
-        return generate_image_with_dalle(specific_prompt)
+        file_name = specific_prompt.replace(" ", "_") + ".png"
+        image_url = generate_image(specific_prompt)
+        if image_url:
+            image_data = download_image(image_url)
+            return file_name, image_data
+        else:
+            return None, None
 
     if prompt.startswith("/video "):
-        if not replicate_api_key:
-            st.error("Replicate API key is not set. Please add it in the sidebar.")
-            return None, None
         specific_prompt = prompt.replace("/video ", "").strip()
-        return generate_video_with_replicate(specific_prompt)
+        return generate_video_logo(specific_prompt)
 
     specific_prompt = f"Please generate the following file content without any explanations or additional text:\n{prompt}"
 
@@ -344,14 +361,28 @@ def generate_file_with_gpt(prompt):
 
     return file_name, file_data
 
-def generate_image_with_dalle(prompt):
-    return generate_image(prompt)
-
 def generate_music_with_replicate(prompt):
-    return generate_audio_logo(prompt)
-
-def generate_video_with_replicate(prompt):
-    return generate_video_logo(prompt)
+    replicate_api_key = st.session_state.api_keys.get("replicate")
+    if not replicate_api_key:
+        st.error("Replicate API key is not set.")
+        return None, None
+    model = st.session_state.get('selected_music_model', 'meta-musicgen')
+    if model == 'meta-musicgen':
+        try:
+            client = replicate.Client(api_token=replicate_api_key)
+            output_url = client.run(
+                "facebook/MusicGen",
+                input={"text": prompt}
+            )
+            music_data = requests.get(output_url).content
+            file_name = prompt.replace(" ", "_") + ".mp3"
+            return file_name, music_data
+        except Exception as e:
+            st.error(f"Error generating music: {e}")
+            return None, None
+    else:
+        st.error("Selected music model is not supported yet.")
+        return None, None
 
 def chat_with_gpt(prompt, uploaded_files):
     model = st.session_state.get('selected_chat_model', 'gpt-4')
@@ -518,85 +549,89 @@ def file_management_tab():
         for file_name, file_data in files.items():
             st.write(f"{file_name}: {len(file_data)} bytes")
 
-# Sidebar for API Keys and Chat
+# Sidebar with Tabs: API Keys and Chat
 def sidebar():
-    st.sidebar.header("🔑 API Keys")
-    st.sidebar.text_input("OpenAI API Key", value=st.session_state.api_keys['openai'], type="password", key="openai_api_key")
-    st.sidebar.text_input("Replicate API Key", value=st.session_state.api_keys['replicate'], type="password", key="replicate_api_key")
-    st.sidebar.text_input("Stability AI API Key", value=st.session_state.api_keys['stability'], type="password", key="stability_api_key")
-    st.sidebar.text_input("Luma AI API Key", value=st.session_state.api_keys['luma'], type="password", key="luma_api_key")
-    st.sidebar.text_input("RunwayML API Key", value=st.session_state.api_keys['runway'], type="password", key="runway_api_key")
-    st.sidebar.text_input("Clipdrop API Key", value=st.session_state.api_keys['clipdrop'], type="password", key="clipdrop_api_key")
-    if st.sidebar.button("💾 Save API Keys"):
-        st.session_state.api_keys['openai'] = st.session_state.openai_api_key
-        st.session_state.api_keys['replicate'] = st.session_state.replicate_api_key
-        st.session_state.api_keys['stability'] = st.session_state.stability_api_key
-        st.session_state.api_keys['luma'] = st.session_state.luma_api_key
-        st.session_state.api_keys['runway'] = st.session_state.runway_api_key
-        st.session_state.api_keys['clipdrop'] = st.session_state.clipdrop_api_key
-        save_api_keys()
-        st.sidebar.success("API Keys saved successfully!")
+    with st.sidebar:
+        tab = st.radio("Sidebar", ["🔑 API Keys", "💬 Chat"], key="sidebar_tab")
 
-    st.sidebar.header("💬 Chat Assistant")
-    # Model selection
-    st.sidebar.subheader("Model Selection")
-    st.session_state['selected_chat_model'] = st.sidebar.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo"])
-    st.session_state['selected_image_model'] = st.sidebar.selectbox("Image Model", ["dall-e"])
-    st.session_state['selected_video_model'] = st.sidebar.selectbox("Video Model", ["placeholder"])
-    st.session_state['selected_music_model'] = st.sidebar.selectbox("Music Model", ["replicate"])
-    st.session_state['selected_code_model'] = st.sidebar.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
+        if tab == "🔑 API Keys":
+            st.header("🔑 API Keys")
+            st.text_input("OpenAI API Key", value=st.session_state.api_keys['openai'], type="password", key="openai_api_key")
+            st.text_input("Replicate API Key", value=st.session_state.api_keys['replicate'], type="password", key="replicate_api_key")
+            st.text_input("Stability AI API Key", value=st.session_state.api_keys['stability'], type="password", key="stability_api_key")
+            st.text_input("Luma AI API Key", value=st.session_state.api_keys['luma'], type="password", key="luma_api_key")
+            st.text_input("RunwayML API Key", value=st.session_state.api_keys['runway'], type="password", key="runway_api_key")
+            st.text_input("Clipdrop API Key", value=st.session_state.api_keys['clipdrop'], type="password", key="clipdrop_api_key")
+            if st.button("💾 Save API Keys"):
+                st.session_state.api_keys['openai'] = st.session_state.openai_api_key
+                st.session_state.api_keys['replicate'] = st.session_state.replicate_api_key
+                st.session_state.api_keys['stability'] = st.session_state.stability_api_key
+                st.session_state.api_keys['luma'] = st.session_state.luma_api_key
+                st.session_state.api_keys['runway'] = st.session_state.runway_api_key
+                st.session_state.api_keys['clipdrop'] = st.session_state.clipdrop_api_key
+                save_api_keys()
+                st.success("API Keys saved successfully!")
+        elif tab == "💬 Chat":
+            st.header("💬 Chat Assistant")
+            # Model selection
+            st.subheader("Model Selection")
+            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo", "gpt-4-32k"])
+            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion"])
+            st.session_state['selected_video_model'] = st.selectbox("Video Model", ["luma-ai"])
+            st.session_state['selected_music_model'] = st.selectbox("Music Model", ["meta-musicgen"])
+            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
 
-    # Chat functionality in sidebar
-    use_personal_assistants = st.sidebar.checkbox("Use Personal Assistants", key="use_personal_assistants")
+            # Chat functionality in sidebar
+            use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
 
-    preset_bots = load_preset_bots() if use_personal_assistants else None
+            preset_bots = load_preset_bots() if use_personal_assistants else None
 
-    selected_bot = None
-    if use_personal_assistants and preset_bots:
-        categories = list(preset_bots.keys())
-        selected_category = st.sidebar.selectbox("Choose a category:", categories, key="category_select")
+            selected_bot = None
+            if use_personal_assistants and preset_bots:
+                categories = list(preset_bots.keys())
+                selected_category = st.selectbox("Choose a category:", categories, key="category_select")
 
-        bots = preset_bots[selected_category]
-        bot_names = [bot['name'] for bot in bots]
-        selected_bot_name = st.sidebar.selectbox("Choose a bot:", bot_names, key="bot_select")
+                bots = preset_bots[selected_category]
+                bot_names = [bot['name'] for bot in bots]
+                selected_bot_name = st.selectbox("Choose a bot:", bot_names, key="bot_select")
 
-        selected_bot = next(bot for bot in bots if bot['name'] == selected_bot_name)
-        bot_description = selected_bot.get('description', '')
-        bot_instructions = selected_bot.get('instructions', '')
+                selected_bot = next(bot for bot in bots if bot['name'] == selected_bot_name)
+                bot_description = selected_bot.get('description', '')
+                bot_instructions = selected_bot.get('instructions', '')
 
-        st.sidebar.write(f"**{selected_bot_name}**: {bot_description}")
-        st.sidebar.write(f"*Instructions*: {bot_instructions}")
+                st.write(f"**{selected_bot_name}**: {bot_description}")
+                st.write(f"*Instructions*: {bot_instructions}")
 
-    prompt = st.sidebar.text_area("Enter your prompt here...", key="chat_prompt")
+            prompt = st.text_area("Enter your prompt here...", key="chat_prompt")
 
-    if st.sidebar.button("Send", key="send_button"):
-        with st.spinner("Fetching response..."):
-            all_files = get_all_global_files()
+            if st.button("Send", key="send_button"):
+                with st.spinner("Fetching response..."):
+                    all_files = get_all_global_files()
 
-            # Limit the number of files and their size
-            max_files = 5
-            max_file_size = 1024 * 1024  # 1 MB
-            relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
-            selected_files = list(relevant_files.keys())[:max_files]
+                    # Limit the number of files and their size
+                    max_files = 5
+                    max_file_size = 1024 * 1024  # 1 MB
+                    relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
+                    selected_files = list(relevant_files.keys())[:max_files]
 
-            # Ensure all files in selected_files exist in session state
-            for file in selected_files:
-                if file not in st.session_state:
-                    st.session_state[file] = all_files[file]
+                    # Ensure all files in selected_files exist in session state
+                    for file in selected_files:
+                        if file not in st.session_state:
+                            st.session_state[file] = all_files[file]
 
-            # Include bot instructions in the prompt if a bot is selected
-            if selected_bot:
-                full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
-            else:
-                full_prompt = prompt
+                    # Include bot instructions in the prompt if a bot is selected
+                    if selected_bot:
+                        full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
+                    else:
+                        full_prompt = prompt
 
-            response = chat_with_gpt(full_prompt, selected_files)
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    response = chat_with_gpt(full_prompt, selected_files)
+                    st.session_state.chat_history.append({"role": "user", "content": prompt})
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    display_chat_history()
+
+            # Display chat history
             display_chat_history()
-
-    # Display chat history
-    display_chat_history()
 
 # Main Tabs
 def main_tabs():
@@ -630,25 +665,38 @@ def main_tabs():
     with tab2:
         st.header("🎬 Media Generation")
         st.write("Generate images and videos using AI models.")
-        media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation"])
+        media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation", "Music Generation"])
         if media_type == "Image Generation":
             image_prompt = st.text_area("Enter an image prompt:")
             if st.button("Generate Image"):
-                file_name, image_data = generate_image_with_dalle(image_prompt)
-                if image_data:
-                    st.session_state.generated_images.append(image_data)
-                    display_image(image_data, "Generated Image")
-                    add_file_to_global_storage(file_name, image_data)
-                    api_key = st.session_state.api_keys.get("openai")
-                    analyze_and_store_image(api_key, file_name, image_data)
+                file_name = image_prompt.replace(" ", "_") + ".png"
+                image_url_or_data = generate_image(image_prompt)
+                if image_url_or_data:
+                    if isinstance(image_url_or_data, bytes):
+                        image_data = image_url_or_data
+                    else:
+                        image_data = download_image(image_url_or_data)
+                    if image_data:
+                        st.session_state.generated_images.append(image_data)
+                        display_image(image_data, "Generated Image")
+                        add_file_to_global_storage(file_name, image_data)
+                        api_key = st.session_state.api_keys.get("openai")
+                        analyze_and_store_image(api_key, file_name, image_data)
         elif media_type == "Video Generation":
             video_prompt = st.text_area("Enter a video prompt:")
             if st.button("Generate Video"):
-                file_name, video_data = generate_video_with_replicate(video_prompt)
+                file_name, video_data = generate_video_logo(video_prompt)
                 if video_data:
                     st.session_state.generated_videos.append(video_data)
                     st.video(video_data)
                     add_file_to_global_storage(file_name, video_data)
+        elif media_type == "Music Generation":
+            music_prompt = st.text_area("Enter a music prompt:")
+            if st.button("Generate Music"):
+                file_name, music_data = generate_music_with_replicate(music_prompt)
+                if music_data:
+                    st.audio(music_data)
+                    add_file_to_global_storage(file_name, music_data)
 
     # Tab 3: Custom Workflows
     with tab3:
@@ -725,12 +773,15 @@ def generate_marketing_campaign(prompt):
         "square_post": "1024x1024",
     }
     for key, desc in descriptions.items():
-        image_url = generate_image(desc, sizes[key])
-        if image_url:
-            image_data = download_image(image_url)
-            if image_data:
+        image_data = generate_image(desc, sizes[key])
+        if image_data:
+            if isinstance(image_data, bytes):
                 images[f"{key}.png"] = image_data
-                add_file_to_global_storage(f"{key}.png", image_data)
+            else:
+                image_content = download_image(image_data)
+                if image_content:
+                    images[f"{key}.png"] = image_content
+            add_file_to_global_storage(f"{key}.png", images[f"{key}.png"])
     st.session_state.campaign_plan['images'] = images
 
     st.info("Generating resources and tips...")
