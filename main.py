@@ -1,4 +1,5 @@
 import streamlit as st
+import openai
 import replicate
 import requests
 from PIL import Image
@@ -6,52 +7,57 @@ from io import BytesIO
 import zipfile
 import re
 
+# ============================================
+#               CONFIGURATION
+# ============================================
+
 # Configure Streamlit page
 st.set_page_config(page_title="Business Plan Automation", layout="wide")
 
-# Title
-st.markdown('<h1 style="text-align: center; color: #2E8B57;">Business Plan Automation</h1>', unsafe_allow_html=True)
+# Custom CSS for enhanced UI
+def local_css(file_name):
+    """
+    Loads local CSS file to style the Streamlit app.
+    """
+    with open(file_name) as f:
+        st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
 
-# Sidebar for API Keys
-with st.sidebar:
-    st.header("🔑 API Keys")
-    
-    st.markdown("**Enter your API keys below.**")
-    
-    openai_api_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...")
-    replicate_api_key = st.text_input("Replicate API Key", type="password", placeholder="r8_...")
-    
-    if st.button("Submit API Keys"):
-        if openai_api_key and replicate_api_key:
-            st.session_state['openai_api_key'] = openai_api_key
-            st.session_state['replicate_api_key'] = replicate_api_key
-            st.success("API Keys submitted successfully!")
-        else:
-            st.error("Please enter both OpenAI and Replicate API keys.")
+# Uncomment the line below and create a 'styles.css' file for custom styles
+# local_css("styles.css")
 
-# Function to set API keys
+# ============================================
+#              HELPER FUNCTIONS
+# ============================================
+
 def set_api_keys():
+    """
+    Sets the OpenAI API key from session state.
+    """
     if 'openai_api_key' in st.session_state:
         openai.api_key = st.session_state['openai_api_key']
     else:
         st.error("Please enter your OpenAI API Key in the sidebar.")
-    
-    if 'replicate_api_key' in st.session_state:
-        replicate_client = replicate.Client(api_token=st.session_state['replicate_api_key'])
-    else:
-        st.error("Please enter your Replicate API Key in the sidebar.")
 
-# Function to generate text using OpenAI GPT-4
 def generate_text(prompt, section):
+    """
+    Generates text for a given business plan section using OpenAI's GPT-4.
+
+    Parameters:
+    - prompt (str): The user-provided prompt for content generation.
+    - section (str): The business plan section to generate.
+
+    Returns:
+    - str: Generated text or error message.
+    """
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4",
+            model=st.session_state.customization['chat_model'],
             messages=[
                 {"role": "system", "content": f"You are a professional business consultant. Help the user create a detailed and comprehensive {section} for their business plan."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.7,
-            max_tokens=1000,
+            max_tokens=1500,
             n=1,
             stop=None,
         )
@@ -60,8 +66,17 @@ def generate_text(prompt, section):
     except Exception as e:
         return f"Error generating text for {section}: {str(e)}"
 
-# Function to generate images using Replicate
 def generate_image(prompt, model_choice):
+    """
+    Generates an image based on the prompt using Replicate's models.
+
+    Parameters:
+    - prompt (str): The description for image generation.
+    - model_choice (str): The selected image generation model.
+
+    Returns:
+    - str: URL of the generated image or error message.
+    """
     try:
         client = replicate.Client(api_token=st.session_state['replicate_api_key'])
         if model_choice == 'Logo Generation':
@@ -79,8 +94,14 @@ def generate_image(prompt, model_choice):
     except Exception as e:
         return f"Error generating image: {str(e)}"
 
-# Function to display image from URL
 def display_image_from_url(url, caption):
+    """
+    Fetches and displays an image from a given URL with a caption.
+
+    Parameters:
+    - url (str): The URL of the image.
+    - caption (str): The caption to display below the image.
+    """
     try:
         response = requests.get(url)
         response.raise_for_status()
@@ -89,34 +110,91 @@ def display_image_from_url(url, caption):
     except Exception as e:
         st.error(f"Failed to load image for {caption}: {str(e)}")
 
-# Function to clean generated code (if any)
 def clean_text(text):
+    """
+    Cleans the generated text by removing code block markers and introductory text.
+
+    Parameters:
+    - text (str): The raw generated text.
+
+    Returns:
+    - str: Cleaned text.
+    """
     text = text.strip()
     text = re.sub(r'^```\w*\n|```$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^.*?Here\'s.*?:\n', '', text, flags=re.DOTALL)
     return text
 
-# Main Content
-if 'openai_api_key' not in st.session_state or 'replicate_api_key' not in st.session_state:
-    st.warning("Please enter your OpenAI and Replicate API keys in the sidebar to proceed.")
-else:
-    set_api_keys()
+def create_zip(business_plan, images):
+    """
+    Creates a ZIP file containing all business plan sections and images.
+
+    Parameters:
+    - business_plan (dict): Dictionary containing business plan sections.
+    - images (dict): Dictionary containing image names and URLs.
+
+    Returns:
+    - BytesIO: In-memory bytes buffer of the ZIP file.
+    """
+    zip_buffer = BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
+        # Add text sections
+        for section, content in business_plan.items():
+            zip_file.writestr(f"{section}.txt", content)
+        
+        # Add images
+        for img_name, img_url in images.items():
+            if isinstance(img_url, str) and img_url.startswith("http"):
+                try:
+                    img_response = requests.get(img_url)
+                    img_response.raise_for_status()
+                    img = Image.open(BytesIO(img_response.content))
+                    img_buffer = BytesIO()
+                    img.save(img_buffer, format='PNG')
+                    zip_file.writestr(f"{img_name}.png", img_buffer.getvalue())
+                except:
+                    pass  # Skip if there's an error
+    return zip_buffer
+
+# ============================================
+#               MAIN APP
+# ============================================
+
+def main():
+    """
+    Main function to run the Streamlit app.
+    """
+    # Initialize session state for customization
+    if 'customization' not in st.session_state:
+        st.session_state.customization = {
+            'image_types': ['Logo Generation', 'Chart Generation'],
+            'chat_model': 'gpt-4',
+            'image_model': 'Logo Generation',
+        }
     
-    # Tabs for different sections
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "Executive Summary", 
-        "Market Analysis", 
-        "Organization & Management", 
-        "Service/Product Line", 
-        "Marketing & Sales", 
-        "Financial Projections"
+    # Set API keys
+    if 'openai_api_key' in st.session_state and 'replicate_api_key' in st.session_state:
+        set_api_keys()
+    else:
+        st.warning("Please enter your OpenAI and Replicate API keys in the sidebar to proceed.")
+        return  # Exit the app until API keys are provided
+    
+    # Create tabs for different business plan sections
+    tabs = st.tabs([
+        "📄 Executive Summary", 
+        "📈 Market Analysis", 
+        "👥 Organization & Management", 
+        "🛠️ Service/Product Line", 
+        "📢 Marketing & Sales", 
+        "💰 Financial Projections"
     ])
     
-    # Dictionary to store generated sections
+    # Dictionary to store generated content
     business_plan = {}
     images = {}
     
-    with tab1:
+    # Executive Summary Tab
+    with tabs[0]:
         st.markdown('<h2 style="color: #4682B4;">📄 Executive Summary</h2>', unsafe_allow_html=True)
         prompt = st.text_area("Describe your business for the Executive Summary:", height=150)
         if st.button("Generate Executive Summary", key="exec_summary"):
@@ -129,7 +207,8 @@ else:
             else:
                 st.error("Please provide a description of your business.")
     
-    with tab2:
+    # Market Analysis Tab
+    with tabs[1]:
         st.markdown('<h2 style="color: #4682B4;">📈 Market Analysis</h2>', unsafe_allow_html=True)
         prompt = st.text_area("Provide details about your target market and competition:", height=150)
         if st.button("Generate Market Analysis", key="market_analysis"):
@@ -142,7 +221,8 @@ else:
             else:
                 st.error("Please provide details about your target market and competition.")
     
-    with tab3:
+    # Organization & Management Tab
+    with tabs[2]:
         st.markdown('<h2 style="color: #4682B4;">👥 Organization & Management</h2>', unsafe_allow_html=True)
         prompt = st.text_area("Describe your business's organizational structure and management team:", height=150)
         if st.button("Generate Organization & Management", key="org_management"):
@@ -155,7 +235,8 @@ else:
             else:
                 st.error("Please describe your business's organizational structure and management team.")
     
-    with tab4:
+    # Service/Product Line Tab
+    with tabs[3]:
         st.markdown('<h2 style="color: #4682B4;">🛠️ Service/Product Line</h2>', unsafe_allow_html=True)
         prompt = st.text_area("Describe your products or services:", height=150)
         if st.button("Generate Service/Product Line", key="service_product"):
@@ -170,7 +251,7 @@ else:
         
         st.markdown('<h3 style="color: #4682B4;">🎨 Generate Business Logo</h3>', unsafe_allow_html=True)
         logo_prompt = st.text_input("Enter a prompt for your business logo:", "Modern minimalist logo for a tech startup")
-        logo_model = st.selectbox("Select Image Generation Model:", ["Logo Generation", "Chart Generation"], index=0)
+        logo_model = st.selectbox("Select Image Generation Model:", ["Logo Generation"], index=0)
         if st.button("Generate Logo", key="generate_logo"):
             if logo_prompt.strip():
                 with st.spinner('Generating Logo...'):
@@ -184,7 +265,8 @@ else:
             else:
                 st.error("Please enter a prompt for the logo.")
     
-    with tab5:
+    # Marketing & Sales Tab
+    with tabs[4]:
         st.markdown('<h2 style="color: #4682B4;">📢 Marketing & Sales</h2>', unsafe_allow_html=True)
         prompt = st.text_area("Outline your marketing and sales strategies:", height=150)
         if st.button("Generate Marketing & Sales", key="marketing_sales"):
@@ -197,7 +279,8 @@ else:
             else:
                 st.error("Please outline your marketing and sales strategies.")
     
-    with tab6:
+    # Financial Projections Tab
+    with tabs[5]:
         st.markdown('<h2 style="color: #4682B4;">💰 Financial Projections</h2>', unsafe_allow_html=True)
         prompt = st.text_area("Provide your financial projections and funding requirements:", height=150)
         if st.button("Generate Financial Projections", key="financial_projections"):
@@ -226,37 +309,19 @@ else:
             else:
                 st.error("Please enter a prompt for the financial chart.")
     
-    # Generate and Download Business Plan
+    # ============================================
+    #        DOWNLOAD BUSINESS PLAN AS ZIP
+    # ============================================
+
     st.markdown('<h2 style="text-align: center; color: #2E8B57;">📥 Download Your Business Plan</h2>', unsafe_allow_html=True)
     if st.button("Download Business Plan as ZIP"):
         if business_plan or images:
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-                # Add text sections
-                for section, content in business_plan.items():
-                    zip_file.writestr(f"{section}.txt", content)
-                
-                # Add images
-                for img_name, img_url in images.items():
-                    if isinstance(img_url, str) and img_url.startswith("http"):
-                        try:
-                            img_response = requests.get(img_url)
-                            img_response.raise_for_status()
-                            img = Image.open(BytesIO(img_response.content))
-                            img_buffer = BytesIO()
-                            img.save(img_buffer, format='PNG')
-                            zip_file.writestr(f"{img_name}.png", img_buffer.getvalue())
-                        except:
-                            pass  # Skip if there's an error
-                    else:
-                        pass  # Skip if not a valid URL
-                
-                # Add additional files if necessary
-                
-            zip_bytes = zip_buffer.getvalue()
+            with st.spinner('Creating ZIP file...'):
+                zip_buffer = create_zip(business_plan, images)
+            st.success("ZIP file created successfully!")
             st.download_button(
                 label="Download Business Plan ZIP",
-                data=zip_bytes,
+                data=zip_buffer.getvalue(),
                 file_name="business_plan.zip",
                 mime="application/zip",
                 help="Download a ZIP file containing all generated sections and images."
@@ -264,7 +329,10 @@ else:
         else:
             st.error("No content to download. Please generate sections of your business plan first.")
     
-    # Footer
+    # ============================================
+    #                   FOOTER
+    # ============================================
+
     st.markdown("---")
     st.markdown("""
         <div style="text-align: center;">
@@ -273,3 +341,7 @@ else:
             [LinkedIn](https://linkedin.com/in/yourusername)</p>
         </div>
         """, unsafe_allow_html=True)
+
+# Run the app
+if __name__ == "__main__":
+    main()
