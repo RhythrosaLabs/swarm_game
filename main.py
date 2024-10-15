@@ -4,9 +4,8 @@ import json
 import os
 import zipfile
 from io import BytesIO
-from PIL import Image, ImageOps
+from PIL import Image
 import base64
-import numpy as np
 
 # Set page configuration
 st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
@@ -34,6 +33,9 @@ if 'workflow_files' not in st.session_state:
 if 'campaign_plan' not in st.session_state:
     st.session_state.campaign_plan = {}
 
+if 'game_plan' not in st.session_state:
+    st.session_state.game_plan = {}
+
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
@@ -58,9 +60,9 @@ def save_api_keys():
     with open("api_keys.json", 'w') as file:
         json.dump(st.session_state.api_keys, file)
 
-def get_headers(api_name):
+def get_headers():
     return {
-        "Authorization": f"Bearer {st.session_state.api_keys[api_name]}",
+        "Authorization": f"Bearer {st.session_state.api_keys['openai']}",
         "Content-Type": "application/json"
     }
 
@@ -82,21 +84,23 @@ def display_chat_history():
             st.sidebar.markdown(f"**Assistant:** {entry['content']}")
 
 def generate_content(prompt, role):
-    model = st.session_state.get('selected_chat_model', 'gpt-4')
-    headers = get_headers('openai')
+    model = 'gpt-4o'  # Using GPT-4o
+    headers = get_headers()
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": f"You are a helpful assistant specializing in {role}."},
+            {"role": "system", "content": f"You are a creative assistant specializing in {role}."},
             {"role": "user", "content": prompt}
-        ]
+        ],
+        "max_tokens": 2000,
+        "temperature": 0.7
     }
     try:
         response = requests.post(CHAT_API_URL, headers=headers, json=data)
         response.raise_for_status()
         response_data = response.json()
         content_text = response_data["choices"][0]["message"]["content"]
-        return content_text
+        return content_text.strip()
     except Exception as e:
         st.error(f"Error generating content: {e}")
         return None
@@ -104,7 +108,7 @@ def generate_content(prompt, role):
 def generate_image(prompt, size="512x512"):
     model = st.session_state.get('selected_image_model', 'dall-e')
     if model == 'dall-e':
-        headers = get_headers('openai')
+        headers = get_headers()
         data = {
             "prompt": prompt,
             "n": 1,
@@ -156,85 +160,59 @@ def generate_image_with_stability(prompt, size):
         return None
 
 def generate_video(prompt):
-    model = st.session_state.get('selected_video_model', 'luma-ai')
-    if model == 'luma-ai':
-        luma_api_key = st.session_state.api_keys.get('luma')
-        if not luma_api_key:
-            st.error("Luma AI API key is not set.")
-            return None, None
-        # Placeholder for Luma AI video generation
-        st.info("Luma AI video generation is not yet implemented.")
-        return None, None
-    elif model == 'stable-diffusion':
-        # Implement text-to-video using Stable Diffusion
-        st.info("Stable Diffusion text-to-video generation is not yet implemented.")
-        return None, None
-    else:
-        st.error("Selected video model is not supported yet.")
-        return None, None
+    st.info("Video generation is not yet implemented.")
+    return None, None
 
 def display_image(image_data, caption):
     image = Image.open(BytesIO(image_data))
     st.image(image, caption=caption, use_column_width=True)
 
 def generate_audio(prompt):
-    model = st.session_state.get('selected_music_model', 'meta-musicgen')
-    if model == 'meta-musicgen':
-        return generate_music_with_replicate(prompt)
-    else:
-        st.error("Selected music model is not supported yet.")
-        return None, None
+    st.info("Music generation is not yet implemented.")
+    return None, None
 
-def generate_music_with_replicate(prompt):
-    replicate_api_key = st.session_state.api_keys.get("replicate")
-    if not replicate_api_key:
-        st.error("Replicate API key is not set.")
-        return None, None
-    try:
-        import replicate
-        client = replicate.Client(api_token=replicate_api_key)
-        model = client.models.get("facebook/MusicGen")
-        version = model.versions.get("80de8355fb1f600b97e687d9b0adf2a858e9799ed6c78ba77883d4680e3a9111")
-        inputs = {
-            'description': prompt,
-            'duration': 10,  # seconds
+def describe_image(file_data):
+    # Using GPT-4o with image understanding capabilities
+    model = 'gpt-4o'
+    headers = get_headers()
+    base64_image = base64.b64encode(file_data).decode('utf-8')
+    image_data_url = f"data:image/png;base64,{base64_image}"
+
+    # Prepare the message content with the image
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe the content of this image."},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url
+                    }
+                }
+            ]
         }
-        output_url = version.predict(**inputs)
-        music_data = requests.get(output_url).content
-        file_name = prompt.replace(" ", "_") + ".mp3"
-        return file_name, music_data
-    except Exception as e:
-        st.error(f"Error generating music: {e}")
-        return None, None
+    ]
 
-def encode_image(image_data):
-    return base64.b64encode(image_data).decode('utf-8')
-
-def describe_image(api_key, image_data):
-    headers = get_headers('openai')
     data = {
-        "model": "gpt-4-vision",
-        "messages": [
-            {"role": "user", "content": "Describe the content of this image."}
-        ]
+        "model": model,
+        "messages": messages,
+        "max_tokens": 500,
+        "temperature": 0.5
     }
-    files = {
-        'file': ('image.png', image_data, 'application/octet-stream')
-    }
+
     try:
-        response = requests.post(CHAT_API_URL, headers=headers, data={'data': json.dumps(data)}, files=files)
-        if response.status_code == 200 and 'choices' in response.json():
-            description = response.json()['choices'][0]['message']['content']
-            return description
-        else:
-            st.error(f"Failed to analyze the image. Response: {response.text}")
-            return None
+        response = requests.post(CHAT_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        description = response_data['choices'][0]['message']['content']
+        return description.strip()
     except Exception as e:
-        st.error(f"An error occurred during image analysis: {e}")
+        st.error(f"Error describing image: {e}")
         return None
 
-def analyze_and_store_image(api_key, file_name, file_data):
-    description = describe_image(api_key, file_data)
+def analyze_and_store_image(file_name, file_data):
+    description = describe_image(file_data)
     if description:
         add_to_chat_knowledge_base(file_name, description)
         st.success(f"Image {file_name} analyzed and stored in knowledge base.")
@@ -242,9 +220,7 @@ def analyze_and_store_image(api_key, file_name, file_data):
         st.error(f"Failed to analyze and store image {file_name}.")
 
 def generate_file_with_gpt(prompt):
-    api_keys = st.session_state.api_keys
-    openai_api_key = api_keys.get("openai")
-
+    openai_api_key = st.session_state.api_keys.get("openai")
     if not openai_api_key:
         st.error("OpenAI API key is not set. Please add it in the API Keys tab.")
         return None, None
@@ -276,8 +252,8 @@ def generate_file_with_gpt(prompt):
     # Prepare the prompt for the model
     model_prompt = f"Generate a {file_extension} file with the following content:\n{specific_prompt}"
 
-    model = st.session_state.get('selected_code_model', 'gpt-4')
-    headers = get_headers('openai')
+    model = 'gpt-4o'
+    headers = get_headers()
     data = {
         "model": model,
         "messages": [
@@ -321,10 +297,7 @@ def analyze_and_store_file(file_name, file_data):
                         add_to_chat_knowledge_base(zip_info.filename, analyzed_content)
                         st.success(f"Analyzed and stored {zip_info.filename} from {file_name} in knowledge base.")
     elif file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-        api_keys = st.session_state.api_keys
-        api_key = api_keys.get("openai")
-        if api_key:
-            analyze_and_store_image(api_key, file_name, file_data)
+        analyze_and_store_image(file_name, file_data)
 
 def enhance_content(content, filename):
     api_key = st.session_state.api_keys.get('openai')
@@ -332,12 +305,12 @@ def enhance_content(content, filename):
         st.warning("OpenAI API Key is required for content enhancement.")
         return content
 
-    model = st.session_state.get('selected_code_model', 'gpt-4')
-    headers = get_headers('openai')
+    model = 'gpt-4o'
+    headers = get_headers()
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": f"Enhance the following content from {filename} and provide a summary."},
+            {"role": "system", "content": f"Enhance and summarize the following content from {filename}."},
             {"role": "user", "content": content}
         ],
         "max_tokens": 1500,
@@ -349,7 +322,7 @@ def enhance_content(content, filename):
         response.raise_for_status()
         response_data = response.json()
         enhanced_content = response_data['choices'][0]['message']['content']
-        return enhanced_content
+        return enhanced_content.strip()
     except Exception as e:
         st.error(f"Error enhancing content: {e}")
         return content
@@ -381,7 +354,7 @@ def file_management_tab():
         analyze_and_store_file(uploaded_file.name, file_data)
         st.success(f"Uploaded {uploaded_file.name}")
 
-    # Add text field and button for generating files using GPT-4
+    # Add text field and button for generating files using GPT-4o
     st.subheader("Generate File")
     generation_prompt = st.text_input("Enter prompt to generate file (e.g., '/python Generate a script that says hello world'):")
     if st.button("Generate File"):
@@ -446,13 +419,6 @@ def sidebar():
                 st.success("API Keys saved successfully!")
         elif tab == "💬 Chat":
             st.header("💬 Chat Assistant")
-            # Model selection
-            st.subheader("Model Selection")
-            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo"])
-            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion"])
-            st.session_state['selected_video_model'] = st.selectbox("Video Model", ["luma-ai", "stable-diffusion"])
-            st.session_state['selected_music_model'] = st.selectbox("Music Model", ["meta-musicgen"])
-            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
 
             # Chat functionality in sidebar
             use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
@@ -507,8 +473,8 @@ def sidebar():
             display_chat_history()
 
 def chat_with_gpt(prompt, uploaded_files):
-    model = st.session_state.get('selected_chat_model', 'gpt-4')
-    headers = get_headers('openai')
+    model = 'gpt-4o'
+    headers = get_headers()
     openai_api_key = st.session_state.api_keys.get('openai')
 
     if not openai_api_key:
@@ -534,9 +500,33 @@ def chat_with_gpt(prompt, uploaded_files):
     data = {
         "model": model,
         "messages": chat_history + [
-            {"role": "user", "content": f"{prompt}\n\nFiles:\n{''.join(file_contents)}\n\nKnowledge Base:\n{''.join(knowledge_base_contents)}"}
-        ]
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 1500,
+        "temperature": 0.7
     }
+
+    # Handle image files in the knowledge base
+    images_in_kb = []
+    for file_name, description in st.session_state.chat_knowledge_base.items():
+        if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+            file_data = st.session_state.global_file_storage.get(file_name)
+            if file_data:
+                base64_image = base64.b64encode(file_data).decode('utf-8')
+                image_data_url = f"data:image/png;base64,{base64_image}"
+                images_in_kb.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_url
+                    }
+                })
+
+    # Include images and files in the prompt
+    if images_in_kb:
+        data["messages"][-1]["content"] = [
+            {"type": "text", "text": prompt},
+            *images_in_kb
+        ]
 
     try:
         response = requests.post(CHAT_API_URL, headers=headers, json=data)
@@ -549,7 +539,7 @@ def chat_with_gpt(prompt, uploaded_files):
         chat_history.append({"role": "assistant", "content": assistant_reply})
         st.session_state["chat_history"] = chat_history
 
-        return assistant_reply
+        return assistant_reply.strip()
     except Exception as e:
         st.error(f"Error in chat: {e}")
         return "I'm sorry, I couldn't process your request."
@@ -586,7 +576,7 @@ def main_tabs():
                 if action == "Marketing Campaign":
                     generate_marketing_campaign(prompt)
                 elif action == "Game Plan":
-                    st.write("Game Plan generation coming soon!")
+                    generate_game_plan(prompt)
                 elif action == "Comic Book":
                     st.write("Comic Book generation coming soon!")
 
@@ -609,8 +599,7 @@ def main_tabs():
                         st.session_state.generated_images.append(image_data)
                         display_image(image_data, "Generated Image")
                         add_file_to_global_storage(file_name, image_data)
-                        api_key = st.session_state.api_keys.get("openai")
-                        analyze_and_store_image(api_key, file_name, image_data)
+                        analyze_and_store_image(file_name, image_data)
         elif media_type == "Video Generation":
             video_prompt = st.text_area("Enter a video prompt:")
             if st.button("Generate Video"):
@@ -680,29 +669,39 @@ def main_tabs():
 # Generate Marketing Campaign Function
 def generate_marketing_campaign(prompt):
     st.info("Generating campaign concept...")
-    campaign_concept = generate_content(f"Create a detailed marketing campaign concept based on the following prompt: {prompt}.", "marketing")
+    campaign_concept = generate_content(f"Create a detailed marketing campaign concept based on the following prompt:\n\n{prompt}\n\nInclude target audience analysis, unique selling points, and overall strategy.", "marketing")
     st.session_state.campaign_plan['campaign_concept'] = campaign_concept
     add_file_to_global_storage("campaign_concept.txt", campaign_concept)
 
     st.info("Generating marketing plan...")
-    marketing_plan = generate_content(f"Create a detailed marketing plan for the campaign: {campaign_concept}", "marketing")
+    marketing_plan = generate_content(f"Develop a comprehensive marketing plan for the campaign:\n\n{campaign_concept}\n\nInclude social media strategies, content ideas, and advertising channels.", "marketing")
     st.session_state.campaign_plan['marketing_plan'] = marketing_plan
     add_file_to_global_storage("marketing_plan.txt", marketing_plan)
+
+    st.info("Generating social media posts...")
+    social_media_posts = generate_content(f"Create a series of engaging social media posts for the campaign:\n\n{campaign_concept}\n\nInclude captions and hashtags for platforms like Instagram, Twitter, and Facebook.", "marketing")
+    st.session_state.campaign_plan['social_media_posts'] = social_media_posts
+    add_file_to_global_storage("social_media_posts.txt", social_media_posts)
+
+    st.info("Generating email marketing content...")
+    email_content = generate_content(f"Write compelling email marketing content for the campaign:\n\n{campaign_concept}\n\nInclude subject lines, body text, and calls to action.", "marketing")
+    st.session_state.campaign_plan['email_content'] = email_content
+    add_file_to_global_storage("email_content.txt", email_content)
 
     st.info("Generating images...")
     images = {}
     descriptions = {
-        "banner": "Wide banner image in a modern and appealing style, with absolutely no text, matching the theme of: " + campaign_concept,
-        "instagram_background": "Tall background image suitable for Instagram video, with absolutely no text, matching the theme of: " + campaign_concept,
-        "square_post": "Square background image for social media post, with absolutely no text, matching the theme of: " + campaign_concept,
+        "banner": "Design a captivating banner image that represents the campaign's theme. No text.",
+        "instagram_post": "Create an eye-catching Instagram post image that aligns with the campaign. No text.",
+        "facebook_ad": "Produce an attractive image suitable for a Facebook ad for the campaign. No text."
     }
     sizes = {
-        "banner": "1792x1024",
-        "instagram_background": "1024x1792",
-        "square_post": "1024x1024",
+        "banner": "1792x828",
+        "instagram_post": "1080x1080",
+        "facebook_ad": "1200x628"
     }
     for key, desc in descriptions.items():
-        image_data = generate_image(desc, sizes[key])
+        image_data = generate_image(f"{desc}\n\nCampaign concept: {campaign_concept}", sizes[key])
         if image_data:
             if isinstance(image_data, bytes):
                 images[f"{key}.png"] = image_data
@@ -711,19 +710,10 @@ def generate_marketing_campaign(prompt):
                 if image_content:
                     images[f"{key}.png"] = image_content
             add_file_to_global_storage(f"{key}.png", images[f"{key}.png"])
+            analyze_and_store_image(f"{key}.png", images[f"{key}.png"])
     st.session_state.campaign_plan['images'] = images
 
-    st.info("Generating resources and tips...")
-    resources_tips = generate_content(f"List resources and tips for executing the marketing campaign: {campaign_concept}", "marketing")
-    st.session_state.campaign_plan['resources_tips'] = resources_tips
-    add_file_to_global_storage("resources_tips.txt", resources_tips)
-
-    st.info("Generating recap...")
-    recap = generate_content(f"Recap the marketing campaign: {campaign_concept}", "marketing")
-    st.session_state.campaign_plan['recap'] = recap
-    add_file_to_global_storage("recap.txt", recap)
-
-    st.info("Generating master document...")
+    st.info("Compiling all materials into a master document...")
     master_doc = create_master_document(st.session_state.campaign_plan)
     st.session_state.campaign_plan['master_document'] = master_doc
     add_file_to_global_storage("master_document.txt", master_doc)
@@ -741,25 +731,71 @@ def create_master_document(content_dict):
     for key in content_dict.keys():
         if key == "images":
             continue
-        master_doc += f"{key.replace('_', ' ').capitalize()}:\n{content_dict[key]}\n\n"
+        master_doc += f"{key.replace('_', ' ').title()}:\n\n{content_dict[key]}\n\n{'='*50}\n\n"
     return master_doc
 
 def create_zip(content_dict):
     zip_buffer = BytesIO()
     with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         for key, value in content_dict.items():
-            if isinstance(value, str):
+            if key == 'images' and isinstance(value, dict):
+                for img_name, img_data in value.items():
+                    zip_file.writestr(img_name, img_data)
+            elif isinstance(value, str):
                 zip_file.writestr(f"{key}.txt", value)
-            elif isinstance(value, bytes):
-                zip_file.writestr(key, value)
-            elif isinstance(value, dict):
-                for sub_key, sub_value in value.items():
-                    if isinstance(sub_value, str):
-                        zip_file.writestr(f"{key}/{sub_key}.txt", sub_value)
-                    elif isinstance(sub_value, bytes):
-                        zip_file.writestr(f"{key}/{sub_key}", sub_value)
     zip_buffer.seek(0)
     return zip_buffer
+
+# Generate Game Plan Function
+def generate_game_plan(prompt):
+    st.info("Generating game concept...")
+    game_concept = generate_content(f"Develop an intricate game concept based on the following prompt:\n\n{prompt}\n\nInclude genre, storyline, main characters, and unique gameplay mechanics.", "game development")
+    st.session_state.game_plan['game_concept'] = game_concept
+    add_file_to_global_storage("game_concept.txt", game_concept)
+
+    st.info("Creating game design document...")
+    game_design_doc = generate_content(f"Create a comprehensive game design document for the following game concept:\n\n{game_concept}\n\nInclude detailed descriptions of gameplay mechanics, levels, character abilities, and progression systems.", "game development")
+    st.session_state.game_plan['game_design_document'] = game_design_doc
+    add_file_to_global_storage("game_design_document.txt", game_design_doc)
+
+    st.info("Designing character profiles...")
+    character_profiles = generate_content(f"Develop detailed character profiles for the main characters in the game:\n\n{game_concept}\n\nInclude backstories, personalities, and motivations.", "game development")
+    st.session_state.game_plan['character_profiles'] = character_profiles
+    add_file_to_global_storage("character_profiles.txt", character_profiles)
+
+    st.info("Generating concept art descriptions...")
+    art_descriptions = generate_content(f"Provide detailed descriptions for concept art of key scenes and characters in the game:\n\n{game_concept}", "game development")
+    st.session_state.game_plan['art_descriptions'] = art_descriptions
+    add_file_to_global_storage("art_descriptions.txt", art_descriptions)
+
+    st.info("Generating images...")
+    images = {}
+    descriptions = art_descriptions.split('\n\n')
+    for idx, desc in enumerate(descriptions):
+        image_data = generate_image(desc)
+        if image_data:
+            if isinstance(image_data, bytes):
+                images[f"concept_art_{idx+1}.png"] = image_data
+            else:
+                image_content = requests.get(image_data).content
+                if image_content:
+                    images[f"concept_art_{idx+1}.png"] = image_content
+            add_file_to_global_storage(f"concept_art_{idx+1}.png", images[f"concept_art_{idx+1}.png"])
+            analyze_and_store_image(f"concept_art_{idx+1}.png", images[f"concept_art_{idx+1}.png"])
+    st.session_state.game_plan['images'] = images
+
+    st.info("Compiling all materials into a master document...")
+    master_doc = create_master_document(st.session_state.game_plan)
+    st.session_state.game_plan['master_document'] = master_doc
+    add_file_to_global_storage("game_master_document.txt", master_doc)
+
+    st.success("Game Plan Generated!")
+    st.download_button(
+        label="Download Game Plan ZIP",
+        data=create_zip(st.session_state.game_plan).getvalue(),
+        file_name="game_plan.zip",
+        mime="application/zip"
+    )
 
 # Main function
 def main():
