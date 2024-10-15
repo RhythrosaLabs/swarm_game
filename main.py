@@ -183,28 +183,37 @@ def generate_social_media_schedule(campaign_concept, platforms):
 
     return excel_buffer.getvalue()
 
-def generate_images(api_key, image_prompts, sizes, hd=False):
+def generate_images(api_key, image_prompts, sizes, model_name, hd=False):
     images = {}
 
     for i, (desc, size) in enumerate(zip(image_prompts, sizes)):
-        st.info(f"Generating image {i+1}...")
-        image_url = generate_image(api_key, desc, size, hd)
-        if image_url:
-            try:
+        st.info(f"Generating image {i+1} with {model_name}...")
+        image_data = None
+        if model_name == 'DALL·E':
+            image_url = generate_image_dalle(api_key, desc, size, hd)
+            if image_url:
                 image_data = download_image(image_url)
-                if image_data:
-                    images[f"image_{i+1}.png"] = image_data
-                else:
-                    images[f"image_{i+1}.png"] = b""
-            except Exception as e:
-                images[f"image_{i+1}.png"] = b""
-                st.error(f"Error downloading image {i+1}: {str(e)}")
+        elif model_name == 'Stable Diffusion':
+            stability_api_key = st.session_state.api_keys.get('stability')
+            if stability_api_key:
+                image_data = generate_image_stability(stability_api_key, desc, size)
+            else:
+                st.error("Stability AI API Key is required for Stable Diffusion.")
+        elif model_name == 'Replicate':
+            replicate_api_key = st.session_state.api_keys.get('replicate')
+            if replicate_api_key:
+                image_data = generate_image_replicate(replicate_api_key, desc)
+            else:
+                st.error("Replicate API Key is required for this model.")
+
+        if image_data:
+            images[f"image_{i+1}.png"] = image_data
         else:
             images[f"image_{i+1}.png"] = b""
+
     return images
 
-def generate_image(api_key, prompt, size="1024x1024", hd=False):
-    quality = "hd" if hd else "standard"
+def generate_image_dalle(api_key, prompt, size="1024x1024", hd=False):
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
@@ -223,7 +232,45 @@ def generate_image(api_key, prompt, size="1024x1024", hd=False):
         image_url = response_data['data'][0]['url']
         return image_url
     except requests.RequestException as e:
-        st.error(f"Error generating image: {e}")
+        st.error(f"Error generating image with DALL·E: {e}")
+        return None
+
+def generate_image_stability(api_key, prompt, size="512x512"):
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "text_prompts": [{"text": prompt}],
+        "cfg_scale": 7,
+        "clip_guidance_preset": "FAST_BLUE",
+        "height": int(size.split('x')[1]),
+        "width": int(size.split('x')[0]),
+        "samples": 1,
+        "steps": 30,
+    }
+    try:
+        response = requests.post("https://api.stability.ai/v1/generation/stable-diffusion-xl-beta-v2-2-2/text-to-image", headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        image_base64 = response_data['artifacts'][0]['base64']
+        image_data = base64.b64decode(image_base64)
+        return image_data
+    except Exception as e:
+        st.error(f"Error generating image with Stability AI: {e}")
+        return None
+
+def generate_image_replicate(api_key, prompt):
+    try:
+        replicate_client = replicate.Client(api_token=api_key)
+        output_url = replicate_client.run(
+            "stability-ai/stable-diffusion",
+            input={"prompt": prompt}
+        )
+        image_data = requests.get(output_url[0]).content
+        return image_data
+    except Exception as e:
+        st.error(f"Error generating image with Replicate: {e}")
         return None
 
 def download_image(image_url):
@@ -238,7 +285,7 @@ def download_image(image_url):
 def create_gif(images, filter_type=None):
     st.info("Creating GIF...")
     try:
-        pil_images = [Image.open(BytesIO(img)) for img in images.values()]
+        pil_images = [Image.open(BytesIO(img)) for img in images.values() if img]
         if filter_type:
             pil_images = [apply_filter(img, filter_type) for img in pil_images]
         gif_buffer = BytesIO()
@@ -278,11 +325,8 @@ def generate_audio_logo(prompt, api_key):
             input=input_data
         )
         audio_data = requests.get(output_url).content
-    except replicate.exceptions.ReplicateError as e:
-        st.error(f"Error generating audio: {str(e)}")
-        return None, None
-    except requests.RequestException as e:
-        st.error(f"Error downloading audio: {e}")
+    except Exception as e:
+        st.error(f"Error generating audio logo: {e}")
         return None, None
 
     file_name = prompt.replace(" ", "_") + ".mp3"
@@ -306,8 +350,8 @@ def generate_video_logo(prompt, api_key):
         response_data = response.json()
         image_url = response_data['data'][0]['url']
         image_data = requests.get(image_url).content
-    except requests.RequestException as e:
-        st.error(f"Error generating image: {e}")
+    except Exception as e:
+        st.error(f"Error generating video logo image: {e}")
         return None, None
 
     file_name = prompt.replace(" ", "_") + ".png"
@@ -316,7 +360,11 @@ def generate_video_logo(prompt, api_key):
     return file_name, file_data
 
 def animate_image_to_video(image_data, prompt):
-    stability_api_key = st.session_state.api_keys["stability"]
+    stability_api_key = st.session_state.api_keys.get("stability")
+    if not stability_api_key:
+        st.error("Stability AI API Key is required for animating images to video.")
+        return None
+
     url = STABILITY_API_URL
 
     image = Image.open(BytesIO(image_data))
@@ -349,7 +397,11 @@ def animate_image_to_video(image_data, prompt):
         return None
 
 def fetch_generated_video(generation_id):
-    stability_api_key = st.session_state.api_keys["stability"]
+    stability_api_key = st.session_state.api_keys.get("stability")
+    if not stability_api_key:
+        st.error("Stability AI API Key is required to fetch generated video.")
+        return None
+
     url = f"https://api.stability.ai/v2beta/image-to-video/result/{generation_id}"
 
     while True:
@@ -534,23 +586,28 @@ def generate_marketing_campaign_tab():
             if "image_prompts" not in st.session_state:
                 st.session_state["image_prompts"] = [""]
                 st.session_state["image_sizes"] = ["Square"]
+                st.session_state["image_models"] = ["DALL·E"]
 
             for i in range(len(st.session_state["image_prompts"])):
-                cols = st.columns([3, 1, 1])
+                cols = st.columns([3, 1, 1, 1])
                 with cols[0]:
-                    st.session_state["image_prompts"][i] = st.text_input(f"Image {i+1} Prompt:", st.session_state["image_prompts"][i])
+                    st.session_state["image_prompts"][i] = st.text_input(f"Image {i+1} Prompt:", st.session_state["image_prompts"][i], key=f"image_prompt_{i}")
                 with cols[1]:
-                    st.session_state["image_sizes"][i] = st.selectbox(f"Size {i+1}:", options=list(image_size_options.keys()), index=["Wide", "Tall", "Square"].index(st.session_state["image_sizes"][i]))
+                    st.session_state["image_sizes"][i] = st.selectbox(f"Size {i+1}:", options=list(image_size_options.keys()), index=["Wide", "Tall", "Square"].index(st.session_state["image_sizes"][i]), key=f"image_size_{i}")
                 with cols[2]:
+                    st.session_state["image_models"][i] = st.selectbox(f"Model {i+1}:", ["DALL·E", "Stable Diffusion", "Replicate"], key=f"image_model_{i}")
+                with cols[3]:
                     if st.button("➖", key=f"remove_image_{i}"):
                         st.session_state["image_prompts"].pop(i)
                         st.session_state["image_sizes"].pop(i)
+                        st.session_state["image_models"].pop(i)
                         st.experimental_rerun()
 
             if len(st.session_state["image_prompts"]) < 5:
                 if st.button("➕ Add Image"):
                     st.session_state["image_prompts"].append("")
                     st.session_state["image_sizes"].append("Square")
+                    st.session_state["image_models"].append("DALL·E")
 
             hd_images = st.checkbox("Generate HD images")
 
@@ -615,7 +672,12 @@ def generate_marketing_campaign_tab():
                 st.info("Generating images...")
                 custom_prompts = st.session_state["image_prompts"]
                 image_sizes = [image_size_options[size] for size in st.session_state["image_sizes"]]
-                images = generate_images(api_key, custom_prompts, image_sizes, hd_images)
+                image_models = st.session_state["image_models"]
+                images = {}
+                for idx, (prompt_text, size, model_name) in enumerate(zip(custom_prompts, image_sizes, image_models)):
+                    image_data = generate_images(api_key, [prompt_text], [size], model_name, hd_images)
+                    images.update(image_data)
+
                 campaign_plan['images'] = images
 
                 for image_key, image_data in images.items():
@@ -830,35 +892,61 @@ def main_tabs():
 
     with tab2:
         st.header("🎬 Media Generation")
-        st.write("Generate images and videos using AI models.")
+        st.write("Generate images, videos, and music using AI models.")
+
         media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation", "Music Generation"])
+
         if media_type == "Image Generation":
+            st.subheader("Image Generation")
+
             image_prompt = st.text_area("Enter an image prompt:")
+            image_model = st.selectbox("Select Image Model", ["DALL·E", "Stable Diffusion", "Replicate"])
+            image_size = st.selectbox("Select Image Size", ["256x256", "512x512", "1024x1024"])
+            hd_images = st.checkbox("Generate HD images")
+
             if st.button("Generate Image"):
-                file_name = image_prompt.replace(" ", "_") + ".png"
-                image_url_or_data = generate_image(st.session_state.api_keys['openai'], image_prompt)
-                if image_url_or_data:
-                    image_data = download_image(image_url_or_data)
-                    if image_data:
-                        st.session_state.generated_images.append(image_data)
-                        display_image(image_data, "Generated Image")
-                        add_file_to_global_storage(file_name, image_data)
-                        analyze_and_store_image(file_name, image_data)
+                image_data = generate_images(st.session_state.api_keys['openai'], [image_prompt], [image_size], image_model, hd_images)
+                if image_data:
+                    image_bytes = list(image_data.values())[0]
+                    if image_bytes:
+                        st.image(image_bytes, caption="Generated Image")
+                        add_file_to_global_storage(f"{image_prompt.replace(' ', '_')}.png", image_bytes)
+
         elif media_type == "Video Generation":
+            st.subheader("Video Generation")
+
             video_prompt = st.text_area("Enter a video prompt:")
-            if st.button("Generate Video"):
-                file_name, video_data = generate_video_with_replicate(video_prompt, st.session_state.api_keys.get("replicate"))
-                if video_data:
-                    st.session_state.generated_videos.append(video_data)
-                    st.video(video_data)
-                    add_file_to_global_storage(file_name, video_data)
+            video_model = st.selectbox("Select Video Model", ["Stability AI", "RunwayML"])
+            if video_model == "Stability AI":
+                stability_api_key = st.session_state.api_keys.get("stability")
+                if not stability_api_key:
+                    st.warning("Stability AI API Key is required for video generation.")
+                else:
+                    if st.button("Generate Video"):
+                        image_data = generate_image_dalle(st.session_state.api_keys['openai'], video_prompt)
+                        if image_data:
+                            generation_id = animate_image_to_video(image_data, video_prompt)
+                            if generation_id:
+                                video_data = fetch_generated_video(generation_id)
+                                if video_data:
+                                    st.video(video_data)
+                                    add_file_to_global_storage(f"{video_prompt.replace(' ', '_')}.mp4", video_data)
+            elif video_model == "RunwayML":
+                st.info("RunwayML integration is coming soon.")
+
         elif media_type == "Music Generation":
+            st.subheader("Music Generation")
+
             music_prompt = st.text_area("Enter a music prompt:")
             if st.button("Generate Music"):
-                file_name, music_data = generate_music_with_replicate(music_prompt, st.session_state.api_keys.get("replicate"))
-                if music_data:
-                    st.audio(music_data)
-                    add_file_to_global_storage(file_name, music_data)
+                replicate_api_key = st.session_state.api_keys.get("replicate")
+                if not replicate_api_key:
+                    st.warning("Replicate API Key is required for music generation.")
+                else:
+                    file_name, music_data = generate_audio_logo(music_prompt, replicate_api_key)
+                    if music_data:
+                        st.audio(music_data)
+                        add_file_to_global_storage(file_name, music_data)
 
     with tab3:
         st.header("📂 Custom Workflows")
