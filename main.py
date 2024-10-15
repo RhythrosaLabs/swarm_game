@@ -12,12 +12,13 @@ import replicate
 import pandas as pd
 import base64
 from streamlit_option_menu import option_menu
+import lumaai
 
 # --------------------------
 # Page Configuration
 # --------------------------
 st.set_page_config(
-    page_title="B35 - Super-Powered Automation App",
+    page_title="The Super-Powered Automation App",
     layout="wide",
     page_icon="🚀"
 )
