@@ -785,35 +785,32 @@ def sidebar_menu():
         elif selected == "🛠️ Models":
             st.header("🛠️ Models Selection")
             st.subheader("Code Models")
-            st.session_state['selected_code_model'] = st.selectbox(
+            # No need to set st.session_state['selected_code_model'] explicitly
+            st.selectbox(
                 "Select Code Model",
                 ["gpt-4o", "gpt-4", "llama"],
-                index=["gpt-4o", "gpt-4", "llama"].index(st.session_state['selected_code_model']),
-                key="selected_code_model"
+                key="selected_code_model"  # Session state key for automatic binding
             )
 
             st.subheader("Image Models")
-            st.session_state['selected_image_model'] = st.selectbox(
+            st.selectbox(
                 "Select Image Model",
                 ["dalle3", "stable diffusion", "flux"],
-                index=["dalle3", "stable diffusion", "flux"].index(st.session_state['selected_image_model']),
-                key="selected_image_model"
+                key="selected_image_model"  # Session state key for automatic binding
             )
 
             st.subheader("Video Models")
-            st.session_state['selected_video_model'] = st.selectbox(
+            st.selectbox(
                 "Select Video Model",
                 ["stable diffusion", "luma"],
-                index=["stable diffusion", "luma"].index(st.session_state['selected_video_model']),
-                key="selected_video_model"
+                key="selected_video_model"  # Session state key for automatic binding
             )
 
             st.subheader("Audio Models")
-            st.session_state['selected_audio_model'] = st.selectbox(
+            st.selectbox(
                 "Select Audio Model",
                 ["music gen"],
-                index=["music gen"].index(st.session_state['selected_audio_model']),
-                key="selected_audio_model"
+                key="selected_audio_model"  # Session state key for automatic binding
             )
 
             st.success("Model selections updated.")
@@ -854,6 +851,7 @@ def sidebar_menu():
 
             st.markdown("### Chat History")
             display_chat_history()
+
 
 
 
