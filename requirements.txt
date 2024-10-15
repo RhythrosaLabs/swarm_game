@@ -9,3 +9,4 @@ moviepy
 numpy
 pandas
 openpyxl
+cv2
