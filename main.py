@@ -15,7 +15,7 @@ from fpdf import FPDF
 from gtts import gTTS
 
 # Set page configuration
-st.set_page_config(page_title="Super-Powered Automation App", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
 
 # Initialize session state
 if 'api_keys' not in st.session_state:
@@ -80,16 +80,18 @@ def add_to_chat_knowledge_base(file_name, description):
     st.session_state.chat_knowledge_base[file_name] = description
 
 def display_chat_history():
+    st.sidebar.markdown("### Chat History")
     for entry in st.session_state.get("chat_history", []):
         if entry["role"] == "user":
-            st.markdown(f"**You:** {entry['content']}")
+            st.sidebar.markdown(f"**You:** {entry['content']}")
         else:
-            st.markdown(f"**Assistant:** {entry['content']}")
+            st.sidebar.markdown(f"**Assistant:** {entry['content']}")
 
 def generate_content(prompt, role):
+    model = st.session_state.get('selected_chat_model', 'gpt-4')
     headers = get_headers('openai')
     data = {
-        "model": "gpt-4",
+        "model": model,
         "messages": [
             {"role": "system", "content": f"You are a helpful assistant specializing in {role}."},
             {"role": "user", "content": prompt}
@@ -106,21 +108,26 @@ def generate_content(prompt, role):
         return None
 
 def generate_image(prompt, size="1024x1024"):
-    headers = get_headers('openai')
-    data = {
-        "prompt": prompt,
-        "n": 1,
-        "size": size,
-        "response_format": "url"
-    }
-    try:
-        response = requests.post("https://api.openai.com/v1/images/generations", headers=headers, json=data)
-        response.raise_for_status()
-        response_data = response.json()
-        image_url = response_data['data'][0]['url']
-        return image_url
-    except Exception as e:
-        st.error(f"Error generating image: {e}")
+    model = st.session_state.get('selected_image_model', 'dall-e')
+    if model == 'dall-e':
+        headers = get_headers('openai')
+        data = {
+            "prompt": prompt,
+            "n": 1,
+            "size": size,
+            "response_format": "url"
+        }
+        try:
+            response = requests.post("https://api.openai.com/v1/images/generations", headers=headers, json=data)
+            response.raise_for_status()
+            response_data = response.json()
+            image_url = response_data['data'][0]['url']
+            return image_url
+        except Exception as e:
+            st.error(f"Error generating image: {e}")
+            return None
+    else:
+        st.error("Selected image model is not supported yet.")
         return None
 
 def download_image(image_url):
@@ -137,33 +144,43 @@ def display_image(image_data, caption):
     st.image(image, caption=caption, use_column_width=True)
 
 def generate_audio_logo(prompt):
-    replicate_api_key = st.session_state.api_keys['replicate']
-    if not replicate_api_key:
-        st.warning("Replicate API Key is required for audio generation.")
-        return None, None
-    try:
-        client = replicate.Client(api_token=replicate_api_key)
-        output_url = client.run(
-            "meta/musicgen:6c4ba543e2d36e8eecff0e36e5902bd6f1713c3e7944d0fb294ed4187add6ad2",
-            input={"prompt": prompt}
-        )
-        audio_data = requests.get(output_url).content
-        file_name = f"{prompt.replace(' ', '_')}.mp3"
-        return file_name, audio_data
-    except Exception as e:
-        st.error(f"Error generating audio: {e}")
+    model = st.session_state.get('selected_music_model', 'replicate')
+    if model == 'replicate':
+        replicate_api_key = st.session_state.api_keys['replicate']
+        if not replicate_api_key:
+            st.warning("Replicate API Key is required for audio generation.")
+            return None, None
+        try:
+            client = replicate.Client(api_token=replicate_api_key)
+            output_url = client.run(
+                "meta/musicgen:6c4ba543e2d36e8eecff0e36e5902bd6f1713c3e7944d0fb294ed4187add6ad2",
+                input={"prompt": prompt}
+            )
+            audio_data = requests.get(output_url).content
+            file_name = f"{prompt.replace(' ', '_')}.mp3"
+            return file_name, audio_data
+        except Exception as e:
+            st.error(f"Error generating audio: {e}")
+            return None, None
+    else:
+        st.error("Selected music model is not supported yet.")
         return None, None
 
 def generate_video_logo(prompt):
-    image_url = generate_image(prompt)
-    if image_url:
-        image_data = download_image(image_url)
-        if image_data:
-            # Placeholder for video generation using the image
-            file_name = f"{prompt.replace(' ', '_')}.mp4"
-            # Implement video generation logic here
-            return file_name, image_data  # Replace image_data with actual video data
-    return None, None
+    model = st.session_state.get('selected_video_model', 'placeholder')
+    if model == 'placeholder':
+        image_url = generate_image(prompt)
+        if image_url:
+            image_data = download_image(image_url)
+            if image_data:
+                # Placeholder for video generation using the image
+                file_name = f"{prompt.replace(' ', '_')}.mp4"
+                # Implement video generation logic here
+                return file_name, image_data  # Replace image_data with actual video data
+        return None, None
+    else:
+        st.error("Selected video model is not supported yet.")
+        return None, None
 
 def create_gif(images, filter_type=None):
     try:
@@ -258,9 +275,10 @@ def generate_file_with_gpt(prompt):
 
     specific_prompt = f"Please generate the following file content without any explanations or additional text:\n{prompt}"
 
+    model = st.session_state.get('selected_code_model', 'gpt-4')
     headers = get_headers('openai')
     data = {
-        "model": "gpt-4",
+        "model": model,
         "messages": [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": specific_prompt}
@@ -327,85 +345,16 @@ def generate_file_with_gpt(prompt):
     return file_name, file_data
 
 def generate_image_with_dalle(prompt):
-    api_key = st.session_state.api_keys.get("openai")
-    headers = get_headers('openai')
-    data = {
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024"
-    }
-
-    try:
-        response = requests.post("https://api.openai.com/v1/images/generations", headers=headers, json=data)
-        response.raise_for_status()
-        response_data = response.json()
-        image_url = response_data['data'][0]['url']
-        image_data = requests.get(image_url).content
-    except requests.RequestException as e:
-        st.error(f"Error generating image: {e}")
-        return None, None
-
-    file_name = prompt.replace(" ", "_") + ".png"
-    file_data = image_data
-
-    return file_name, file_data
+    return generate_image(prompt)
 
 def generate_music_with_replicate(prompt):
-    replicate_api_key = st.session_state.api_keys.get("replicate")
-    input_data = {
-        "prompt": prompt,
-        "model_version": "melody",
-        "output_format": "mp3",
-        "normalization_strategy": "peak"
-    }
-
-    try:
-        replicate_client = replicate.Client(api_token=replicate_api_key)
-        output_url = replicate_client.run(
-            "harmonai/melodygen:27b729c47c2af4f7ccee1c3e96a66e94a594e6454f100d2ad34638e99f4a6e29",
-            input=input_data
-        )
-        music_data = requests.get(output_url).content
-    except replicate.exceptions.ReplicateError as e:
-        st.error(f"Error generating music: {str(e)}")
-        return None, None
-    except requests.RequestException as e:
-        st.error(f"Error downloading music: {e}")
-        return None, None
-
-    file_name = prompt.replace(" ", "_") + ".mp3"
-    file_data = music_data
-
-    return file_name, file_data
+    return generate_audio_logo(prompt)
 
 def generate_video_with_replicate(prompt):
-    replicate_api_key = st.session_state.api_keys.get("replicate")
-    input_data = {
-        "prompt": prompt,
-        "num_frames": 30,
-        "frame_rate": 30
-    }
-
-    try:
-        replicate_client = replicate.Client(api_token=replicate_api_key)
-        output_url = replicate_client.run(
-            "deforum/deforum_stable_diffusion:6b3d33d6b3d1c9e3b8e1d3b4b5e1f4c5a6a7b8c9d0e1f2g3h4i5j6k7l8m9n0o1",
-            input=input_data
-        )
-        video_data = requests.get(output_url).content
-    except replicate.exceptions.ReplicateError as e:
-        st.error(f"Error generating video: {str(e)}")
-        return None, None
-    except requests.RequestException as e:
-        st.error(f"Error downloading video: {e}")
-        return None, None
-
-    file_name = prompt.replace(" ", "_") + "_1second.mp4"
-    file_data = video_data
-
-    return file_name, file_data
+    return generate_video_logo(prompt)
 
 def chat_with_gpt(prompt, uploaded_files):
+    model = st.session_state.get('selected_chat_model', 'gpt-4')
     headers = get_headers('openai')
     openai_api_key = st.session_state.api_keys.get('openai')
 
@@ -430,7 +379,7 @@ def chat_with_gpt(prompt, uploaded_files):
     chat_history = st.session_state.get("chat_history", [])
 
     data = {
-        "model": "gpt-4",
+        "model": model,
         "messages": chat_history + [
             {"role": "user", "content": f"{prompt}\n\nFiles:\n{''.join(file_contents)}\n\nKnowledge Base:\n{''.join(knowledge_base_contents)}"}
         ]
@@ -458,9 +407,10 @@ def enhance_content(content, filename):
         st.warning("OpenAI API Key is required for content enhancement.")
         return content
 
+    model = st.session_state.get('selected_code_model', 'gpt-4')
     headers = get_headers('openai')
     data = {
-        "model": "gpt-4",
+        "model": model,
         "messages": [
             {"role": "system", "content": f"Enhance the following content from {filename}."},
             {"role": "user", "content": content}
@@ -568,8 +518,8 @@ def file_management_tab():
         for file_name, file_data in files.items():
             st.write(f"{file_name}: {len(file_data)} bytes")
 
-# Sidebar for API Keys
-def api_keys_sidebar():
+# Sidebar for API Keys and Chat
+def sidebar():
     st.sidebar.header("🔑 API Keys")
     st.sidebar.text_input("OpenAI API Key", value=st.session_state.api_keys['openai'], type="password", key="openai_api_key")
     st.sidebar.text_input("Replicate API Key", value=st.session_state.api_keys['replicate'], type="password", key="replicate_api_key")
@@ -587,13 +537,73 @@ def api_keys_sidebar():
         save_api_keys()
         st.sidebar.success("API Keys saved successfully!")
 
+    st.sidebar.header("💬 Chat Assistant")
+    # Model selection
+    st.sidebar.subheader("Model Selection")
+    st.session_state['selected_chat_model'] = st.sidebar.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo"])
+    st.session_state['selected_image_model'] = st.sidebar.selectbox("Image Model", ["dall-e"])
+    st.session_state['selected_video_model'] = st.sidebar.selectbox("Video Model", ["placeholder"])
+    st.session_state['selected_music_model'] = st.sidebar.selectbox("Music Model", ["replicate"])
+    st.session_state['selected_code_model'] = st.sidebar.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
+
+    # Chat functionality in sidebar
+    use_personal_assistants = st.sidebar.checkbox("Use Personal Assistants", key="use_personal_assistants")
+
+    preset_bots = load_preset_bots() if use_personal_assistants else None
+
+    selected_bot = None
+    if use_personal_assistants and preset_bots:
+        categories = list(preset_bots.keys())
+        selected_category = st.sidebar.selectbox("Choose a category:", categories, key="category_select")
+
+        bots = preset_bots[selected_category]
+        bot_names = [bot['name'] for bot in bots]
+        selected_bot_name = st.sidebar.selectbox("Choose a bot:", bot_names, key="bot_select")
+
+        selected_bot = next(bot for bot in bots if bot['name'] == selected_bot_name)
+        bot_description = selected_bot.get('description', '')
+        bot_instructions = selected_bot.get('instructions', '')
+
+        st.sidebar.write(f"**{selected_bot_name}**: {bot_description}")
+        st.sidebar.write(f"*Instructions*: {bot_instructions}")
+
+    prompt = st.sidebar.text_area("Enter your prompt here...", key="chat_prompt")
+
+    if st.sidebar.button("Send", key="send_button"):
+        with st.spinner("Fetching response..."):
+            all_files = get_all_global_files()
+
+            # Limit the number of files and their size
+            max_files = 5
+            max_file_size = 1024 * 1024  # 1 MB
+            relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
+            selected_files = list(relevant_files.keys())[:max_files]
+
+            # Ensure all files in selected_files exist in session state
+            for file in selected_files:
+                if file not in st.session_state:
+                    st.session_state[file] = all_files[file]
+
+            # Include bot instructions in the prompt if a bot is selected
+            if selected_bot:
+                full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
+            else:
+                full_prompt = prompt
+
+            response = chat_with_gpt(full_prompt, selected_files)
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            display_chat_history()
+
+    # Display chat history
+    display_chat_history()
+
 # Main Tabs
 def main_tabs():
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "🧠 AI Content Generation",
         "🎬 Media Generation",
         "📂 Custom Workflows",
-        "💬 Chat Assistant",
         "📁 File Management"
     ])
 
@@ -686,65 +696,8 @@ def main_tabs():
                 mime="application/zip"
             )
 
-    # Tab 4: Chat Assistant
+    # Tab 4: File Management
     with tab4:
-        st.header("💬 Chat Assistant")
-        st.write("Interact with the assistant for personalized help.")
-
-        use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
-
-        preset_bots = load_preset_bots() if use_personal_assistants else None
-
-        selected_bot = None
-        if use_personal_assistants and preset_bots:
-            categories = list(preset_bots.keys())
-            selected_category = st.selectbox("Choose a category:", categories, key="category_select")
-
-            bots = preset_bots[selected_category]
-            bot_names = [bot['name'] for bot in bots]
-            selected_bot_name = st.selectbox("Choose a bot:", bot_names, key="bot_select")
-
-            selected_bot = next(bot for bot in bots if bot['name'] == selected_bot_name)
-            bot_description = selected_bot.get('description', '')
-            bot_instructions = selected_bot.get('instructions', '')
-
-            st.write(f"**{selected_bot_name}**: {bot_description}")
-            st.write(f"*Instructions*: {bot_instructions}")
-
-        prompt = st.text_area("Enter your prompt here...", key="chat_prompt")
-
-        if st.button("Send", key="send_button"):
-            with st.spinner("Fetching response..."):
-                all_files = get_all_global_files()
-
-                # Limit the number of files and their size
-                max_files = 5
-                max_file_size = 1024 * 1024  # 1 MB
-                relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
-                selected_files = list(relevant_files.keys())[:max_files]
-
-                # Ensure all files in selected_files exist in session state
-                for file in selected_files:
-                    if file not in st.session_state:
-                        st.session_state[file] = all_files[file]
-
-                # Include bot instructions in the prompt if a bot is selected
-                if selected_bot:
-                    full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
-                else:
-                    full_prompt = prompt
-
-                response = chat_with_gpt(full_prompt, selected_files)
-                st.session_state.chat_history.append({"role": "user", "content": prompt})
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                display_chat_history()
-
-        # Display chat history
-        st.markdown("### Chat History")
-        display_chat_history()
-
-    # Tab 5: File Management
-    with tab5:
         file_management_tab()
 
 # Generate Marketing Campaign Function
@@ -831,8 +784,8 @@ def create_zip(content_dict):
 # Main function
 def main():
     load_api_keys()
-    api_keys_sidebar()
     initialize_global_files()
+    sidebar()
     main_tabs()
 
 if __name__ == "__main__":
