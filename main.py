@@ -10,6 +10,7 @@ from fpdf import FPDF
 from gtts import gTTS
 import replicate
 import pandas as pd
+from streamlit_option_menu import option_menu
 
 # --------------------------
 # Page Configuration
@@ -23,36 +24,53 @@ st.set_page_config(
 # --------------------------
 # Initialize Session State
 # --------------------------
-if 'api_keys' not in st.session_state:
-    st.session_state.api_keys = {
-        'openai': '',
-        'replicate': '',
-        'stability': '',
-        'luma': '',
-        'runway': '',
-        'clipdrop': ''
-    }
+def initialize_session_state():
+    """Initialize all necessary session state keys."""
+    if 'api_keys' not in st.session_state:
+        st.session_state.api_keys = {
+            'openai': '',
+            'replicate': '',
+            'stability': '',
+            'luma': '',
+            'runway': '',
+            'clipdrop': ''
+        }
 
-if 'generated_images' not in st.session_state:
-    st.session_state.generated_images = []
+    if 'generated_images' not in st.session_state:
+        st.session_state.generated_images = []
 
-if 'generated_videos' not in st.session_state:
-    st.session_state.generated_videos = []
+    if 'generated_videos' not in st.session_state:
+        st.session_state.generated_videos = []
 
-if 'workflow_files' not in st.session_state:
-    st.session_state.workflow_files = {}
+    if 'workflow_files' not in st.session_state:
+        st.session_state.workflow_files = {}
 
-if 'campaign_plan' not in st.session_state:
-    st.session_state.campaign_plan = {}
+    if 'campaign_plan' not in st.session_state:
+        st.session_state.campaign_plan = {}
 
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+    if 'chat_history' not in st.session_state:
+        st.session_state.chat_history = []
 
-if 'global_file_storage' not in st.session_state:
-    st.session_state.global_file_storage = {}
+    if 'global_file_storage' not in st.session_state:
+        st.session_state.global_file_storage = {}
 
-if 'chat_knowledge_base' not in st.session_state:
-    st.session_state.chat_knowledge_base = {}
+    if 'chat_knowledge_base' not in st.session_state:
+        st.session_state.chat_knowledge_base = {}
+
+    # Initialize selected models if not present
+    if 'selected_code_model' not in st.session_state:
+        st.session_state.selected_code_model = 'gpt-4o'
+
+    if 'selected_image_model' not in st.session_state:
+        st.session_state.selected_image_model = 'dalle3'
+
+    if 'selected_video_model' not in st.session_state:
+        st.session_state.selected_video_model = 'stable diffusion'
+
+    if 'selected_audio_model' not in st.session_state:
+        st.session_state.selected_audio_model = 'music gen'
+
+initialize_session_state()
 
 # --------------------------
 # Constants
@@ -103,7 +121,7 @@ def add_to_chat_knowledge_base(file_name, description):
     st.session_state.chat_knowledge_base[file_name] = description
 
 def display_chat_history():
-    """Display the chat history in the sidebar."""
+    """Display the chat history."""
     st.sidebar.markdown("### Chat History")
     for entry in reversed(st.session_state.get("chat_history", [])):
         if entry["role"] == "user":
@@ -113,7 +131,7 @@ def display_chat_history():
 
 def generate_content(prompt, role):
     """Generate content using the selected chat model."""
-    model = st.session_state.get('selected_chat_model', 'gpt-4o')
+    model = 'gpt-4o'  # Fixed model for content generation
     headers = get_headers('openai')
     if not headers:
         st.error("OpenAI API key is not set.")
@@ -627,6 +645,43 @@ def analyze_and_store_file(file_name, file_data):
         else:
             st.error("OpenAI API key is not set for image analysis.")
 
+def analyze_and_store_image(api_key, file_name, file_data):
+    """Analyze and store image description in knowledge base."""
+    base64_image = encode_image(file_data)
+    description = describe_image(api_key, base64_image)
+    if description:
+        add_to_chat_knowledge_base(file_name, description)
+        st.success(f"Image {file_name} analyzed and stored in knowledge base.")
+    else:
+        st.error(f"Failed to analyze and store image {file_name}.")
+
+def encode_image(image_data):
+    """Encode image data to base64."""
+    return base64.b64encode(image_data).decode('utf-8')
+
+def describe_image(api_key, base64_image):
+    """Describe an image using GPT-4o."""
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": "gpt-4o",
+        "messages": [
+            {
+                "role": "user",
+                "content": f"What's in this image?\n![image](data:image/jpeg;base64,{base64_image})"
+            }
+        ],
+        "max_tokens": 1000
+    }
+    try:
+        response = requests.post(CHAT_API_URL, headers=headers, json=payload)
+        if response.status_code == 200 and 'choices' in response.json():
+            description = response.json()['choices'][0]['message']['content']
+            return description
+        else:
+            return "Failed to analyze the image."
+    except Exception as e:
+        return f"An error occurred: {e}"
+
 def delete_all_files():
     """Delete all files from the global file storage and knowledge base."""
     st.session_state["global_file_storage"] = {}
@@ -637,13 +692,19 @@ def delete_all_files():
 # --------------------------
 # Sidebar with Four Tabs
 # --------------------------
-def sidebar():
+def sidebar_menu():
     """Configure the sidebar with four tabs: Keys, Models, About, Chat."""
     with st.sidebar:
-        st.title("B35 Automation App")
-        tab = st.radio("Navigation", ["🔑 Keys", "🛠️ Models", "ℹ️ About", "💬 Chat"], key="sidebar_tab")
+        selected = option_menu(
+            menu_title="Main Menu",
+            options=["🔑 Keys", "🛠️ Models", "ℹ️ About", "💬 Chat"],
+            icons=["key", "tools", "info-circle", "chat-dots"],
+            menu_icon="cast",
+            default_index=0,
+            orientation="vertical"
+        )
 
-        if tab == "🔑 Keys":
+        if selected == "🔑 Keys":
             st.header("🔑 API Keys")
             st.text_input(
                 "OpenAI API Key",
@@ -691,12 +752,13 @@ def sidebar():
                 save_api_keys()
                 st.success("API Keys saved successfully!")
 
-        elif tab == "🛠️ Models":
+        elif selected == "🛠️ Models":
             st.header("🛠️ Models Selection")
             st.subheader("Code Models")
             st.session_state['selected_code_model'] = st.selectbox(
                 "Select Code Model",
                 ["gpt-4o", "gpt-4", "llama"],
+                index=["gpt-4o", "gpt-4", "llama"].index(st.session_state.selected_code_model),
                 key="selected_code_model"
             )
 
@@ -704,6 +766,7 @@ def sidebar():
             st.session_state['selected_image_model'] = st.selectbox(
                 "Select Image Model",
                 ["dalle3", "stable diffusion", "flux"],
+                index=["dalle3", "stable diffusion", "flux"].index(st.session_state.selected_image_model),
                 key="selected_image_model"
             )
 
@@ -711,6 +774,7 @@ def sidebar():
             st.session_state['selected_video_model'] = st.selectbox(
                 "Select Video Model",
                 ["stable diffusion", "luma"],
+                index=["stable diffusion", "luma"].index(st.session_state.selected_video_model),
                 key="selected_video_model"
             )
 
@@ -718,18 +782,19 @@ def sidebar():
             st.session_state['selected_audio_model'] = st.selectbox(
                 "Select Audio Model",
                 ["music gen"],
+                index=["music gen"].index(st.session_state.selected_audio_model),
                 key="selected_audio_model"
             )
 
             st.success("Model selections updated.")
 
-        elif tab == "ℹ️ About":
+        elif selected == "ℹ️ About":
             st.header("ℹ️ About This App")
             st.write("""
                 **B35 - Super-Powered Automation App** is designed to streamline your content generation, media creation, and workflow automation using cutting-edge AI models.
                 
                 **Features:**
-                - **AI Content Generation**: Create marketing campaigns, game plans, comic books, and more.
+                - **AI Content Generation**: Create marketing campaigns, game plans, and more.
                 - **Media Generation**: Generate images, videos, and audio content.
                 - **Custom Workflows**: Automate complex tasks with customizable workflows.
                 - **File Management**: Upload, generate, and manage your files seamlessly.
@@ -742,11 +807,11 @@ def sidebar():
                 - **Audio**: Music Gen
             """)
 
-        elif tab == "💬 Chat":
+        elif selected == "💬 Chat":
             st.header("💬 Chat Assistant")
             st.subheader("GPT-4o Chat")
-            prompt = st.text_area("Enter your prompt here...", key="chat_prompt")
-            if st.button("Send", key="send_button"):
+            prompt = st.text_area("Enter your prompt here...", key="chat_prompt_sidebar")
+            if st.button("Send", key="send_button_sidebar"):
                 if prompt.strip() == "":
                     st.warning("Please enter a prompt.")
                 else:
@@ -759,6 +824,54 @@ def sidebar():
 
             st.markdown("### Chat History")
             display_chat_history()
+
+def chat_with_gpt(prompt):
+    """Handle chat interactions with GPT-4o."""
+    api_key = st.session_state.api_keys.get("openai")
+    if not api_key:
+        return "Error: OpenAI API key is not set."
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    # Prepare messages including knowledge base and global files
+    file_contents = []
+    for file in list(st.session_state.global_file_storage.keys())[:5]:
+        content = st.session_state.global_file_storage.get(file, "")
+        if isinstance(content, bytes):
+            try:
+                content = content.decode('utf-8')
+            except UnicodeDecodeError:
+                content = "Binary file content not displayable."
+        file_contents.append(f"File: {file}\nContent:\n{content}\n")
+
+    knowledge_base_contents = [
+        f"File: {k}\nDescription:\n{v}\n" for k, v in st.session_state.chat_knowledge_base.items()
+    ]
+
+    # Log the action taken
+    action_log = f"Action Taken: User initiated a chat with prompt: '{prompt}'"
+
+    data = {
+        "model": "gpt-4o",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant integrated with the application's knowledge base and file management system."},
+            {"role": "system", "content": action_log},
+            {"role": "user", "content": f"{prompt}\n\nFiles:\n{''.join(file_contents)}\n\nKnowledge Base:\n{''.join(knowledge_base_contents)}"}
+        ]
+    }
+
+    try:
+        response = requests.post(CHAT_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        assistant_reply = response_data["choices"][0]["message"]["content"]
+        return assistant_reply
+    except Exception as e:
+        st.error(f"Error in chat: {e}")
+        return "I'm sorry, I couldn't process your request."
 
 # --------------------------
 # Main Tabs
@@ -776,9 +889,9 @@ def main_tabs():
     with tab1:
         st.header("🧠 AI Content Generation")
         st.write("Generate marketing campaigns, game plans, comic books, and more using AI.")
-        action = st.selectbox("Choose an action", ["Select an action", "Marketing Campaign", "Game Plan", "Comic Book"])
-        prompt = st.text_area("Enter your topic/keywords:")
-        if st.button("Generate", key="generate_content"):
+        action = st.selectbox("Choose an action", ["Select an action", "Marketing Campaign", "Game Plan", "Comic Book"], key="content_generation_action")
+        prompt = st.text_area("Enter your topic/keywords:", key="content_generation_prompt")
+        if st.button("Generate", key="generate_content_button"):
             if action == "Select an action":
                 st.warning("Please select an action.")
             elif not prompt.strip():
@@ -795,23 +908,26 @@ def main_tabs():
     with tab2:
         st.header("🎬 Media Generation")
         st.write("Generate images, videos, and audio using AI models.")
-        media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation", "Audio Generation"])
+        media_type = st.selectbox("Select Media Type", ["Select", "Image Generation", "Video Generation", "Audio Generation"], key="media_generation_type")
         if media_type == "Image Generation":
-            image_prompt = st.text_area("Enter an image prompt:")
-            if st.button("Generate Image"):
+            image_prompt = st.text_area("Enter an image prompt:", key="image_generation_prompt")
+            size = st.selectbox("Select Image Size", ["512x512", "1024x1024", "1792x1024", "1024x1792"], key="image_generation_size")
+            if st.button("Generate Image", key="generate_image_button"):
                 if image_prompt.strip() == "":
                     st.warning("Please enter an image prompt.")
                 else:
                     with st.spinner("Generating image..."):
-                        file_name, image_data = generate_image_with_dalle(image_prompt, st.session_state.api_keys.get("openai"))
-                        if image_data:
-                            add_file_to_global_storage(file_name, image_data)
-                            st.session_state.generated_images.append(image_data)
-                            display_image(image_data, "Generated Image")
-                            analyze_and_store_file(file_name, image_data)
+                        image_url = generate_image(image_prompt, size)
+                        if image_url:
+                            image_data = download_image(image_url)
+                            if image_data:
+                                add_file_to_global_storage(f"generated_image_{len(st.session_state.generated_images)+1}.png", image_data)
+                                st.session_state.generated_images.append(image_data)
+                                display_image(image_data, "Generated Image")
+                                analyze_and_store_file(f"generated_image_{len(st.session_state.generated_images)}.png", image_data)
         elif media_type == "Video Generation":
-            video_prompt = st.text_area("Enter a video prompt:")
-            if st.button("Generate Video"):
+            video_prompt = st.text_area("Enter a video prompt:", key="video_generation_prompt")
+            if st.button("Generate Video", key="generate_video_button"):
                 if video_prompt.strip() == "":
                     st.warning("Please enter a video prompt.")
                 else:
@@ -822,8 +938,8 @@ def main_tabs():
                             st.session_state.generated_videos.append(video_data)
                             st.video(video_data)
         elif media_type == "Audio Generation":
-            audio_prompt = st.text_area("Enter an audio prompt:")
-            if st.button("Generate Audio"):
+            audio_prompt = st.text_area("Enter an audio prompt:", key="audio_generation_prompt")
+            if st.button("Generate Audio", key="generate_audio_button"):
                 if audio_prompt.strip() == "":
                     st.warning("Please enter an audio prompt.")
                 else:
@@ -844,17 +960,17 @@ def main_tabs():
         def add_step():
             st.session_state["workflow_steps"].append({"prompt": "", "file_name": "", "file_data": None})
 
-        if st.button("➕ Add Step"):
+        if st.button("➕ Add Step", key="add_workflow_step_button"):
             add_step()
 
         for i, step in enumerate(st.session_state["workflow_steps"]):
             st.write(f"### Step {i + 1}")
-            step["prompt"] = st.text_input(f"Prompt for step {i + 1}", value=step["prompt"], key=f"prompt_{i}")
-            if st.button("➖ Remove Step", key=f"remove_step_{i}"):
+            step["prompt"] = st.text_input(f"Prompt for step {i + 1}", value=step["prompt"], key=f"workflow_prompt_{i}")
+            if st.button("➖ Remove Step", key=f"remove_workflow_step_{i}"):
                 st.session_state["workflow_steps"].pop(i)
                 st.experimental_rerun()
 
-        if st.button("Generate All Files"):
+        if st.button("Generate All Files", key="generate_all_workflow_files_button"):
             for i, step in enumerate(st.session_state["workflow_steps"]):
                 if step["prompt"].strip():
                     with st.spinner(f"Generating file for step {i + 1}..."):
@@ -867,7 +983,7 @@ def main_tabs():
                 else:
                     st.warning(f"Prompt for step {i + 1} is empty.")
 
-        if st.button("Download Workflow Files as ZIP"):
+        if st.button("Download Workflow Files as ZIP", key="download_workflow_zip_button"):
             with st.spinner("Creating ZIP file..."):
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -895,8 +1011,8 @@ def main_tabs():
 
         # Generate File using GPT-4o
         st.subheader("Generate File with GPT-4o")
-        generation_prompt = st.text_input("Enter prompt to generate file:", key="generation_prompt")
-        if st.button("Generate File", key="generate_file_button"):
+        generation_prompt = st.text_input("Enter prompt to generate file:", key="generation_prompt_main")
+        if st.button("Generate File", key="generate_file_main_button"):
             if generation_prompt.strip():
                 with st.spinner("Generating file..."):
                     file_name, file_data = generate_file_with_gpt(generation_prompt)
@@ -920,9 +1036,9 @@ def main_tabs():
             # Download All as ZIP and Delete All Buttons
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("📥 Download All as ZIP"):
+                if st.button("📥 Download All as ZIP", key="download_all_zip_main_button"):
                     with st.spinner("Creating ZIP file..."):
-                        zip_data = create_zip_of_global_files()
+                        zip_data = create_zip(st.session_state.global_file_storage)
                         st.download_button(
                             label="Download ZIP",
                             data=zip_data.getvalue(),
@@ -930,7 +1046,7 @@ def main_tabs():
                             mime="application/zip"
                         )
             with col2:
-                if st.button("🗑️ Delete All Files"):
+                if st.button("🗑️ Delete All Files", key="delete_all_files_main_button"):
                     delete_all_files()
 
             # List Files with Download Buttons
@@ -987,6 +1103,7 @@ def main_tabs():
 # --------------------------
 # Chat Functionality
 # --------------------------
+
 def chat_with_gpt(prompt):
     """Handle chat interactions with GPT-4o."""
     api_key = st.session_state.api_keys.get("openai")
@@ -1038,6 +1155,7 @@ def chat_with_gpt(prompt):
 # --------------------------
 # Generate Marketing Campaign
 # --------------------------
+
 def generate_marketing_campaign(prompt):
     """Generate a comprehensive marketing campaign based on the prompt."""
     st.info("Generating campaign concept...")
@@ -1071,15 +1189,16 @@ def generate_marketing_campaign(prompt):
         "square_post": "1024x1024",
     }
     for key, desc in descriptions.items():
-        image_data = generate_image(desc, sizes[key])
-        if image_data:
-            if isinstance(image_data, bytes):
-                images[f"{key}.png"] = image_data
+        image_url = generate_image(desc, sizes[key])
+        if image_url:
+            if isinstance(image_url, str):
+                image_data = download_image(image_url)
+                if image_data:
+                    images[f"{key}.png"] = image_data
+                    add_file_to_global_storage(f"{key}.png", image_data)
             else:
-                image_content = download_image(image_data)
-                if image_content:
-                    images[f"{key}.png"] = image_content
-            add_file_to_global_storage(f"{key}.png", images[f"{key}.png"])
+                images[f"{key}.png"] = image_url
+                add_file_to_global_storage(f"{key}.png", image_url)
     st.session_state.campaign_plan['images'] = images
 
     st.info("Generating resources and tips...")
@@ -1130,7 +1249,7 @@ def main():
     """Main function to run the Streamlit app."""
     load_api_keys()
     initialize_global_files()
-    sidebar()
+    sidebar_menu()
     main_tabs()
 
 if __name__ == "__main__":
