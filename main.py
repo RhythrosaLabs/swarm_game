@@ -12,7 +12,6 @@ import time
 from fpdf import FPDF
 import threading
 import base64
-from PyPDF2 import PdfReader
 import cv2
 from stability_sdk import client
 from stability_sdk.animation import AnimationArgs, Animator
