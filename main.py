@@ -15,7 +15,11 @@ from gtts import gTTS
 import threading
 
 # Set page configuration
-st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
+st.set_page_config(
+    page_title="B35 - Super-Powered Automation App",
+    layout="wide",
+    page_icon="🚀"
+)
 
 # Initialize session state
 if 'api_keys' not in st.session_state:
@@ -65,8 +69,11 @@ def save_api_keys():
         json.dump(st.session_state.api_keys, file)
 
 def get_headers(api_name):
+    api_key = st.session_state.api_keys.get(api_name)
+    if not api_key:
+        return None
     return {
-        "Authorization": f"Bearer {st.session_state.api_keys[api_name]}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
 
@@ -90,6 +97,10 @@ def display_chat_history():
 def generate_content(prompt, role):
     model = st.session_state.get('selected_chat_model', 'gpt-4')
     headers = get_headers('openai')
+    if not headers:
+        st.error("OpenAI API key is not set.")
+        return None
+
     data = {
         "model": model,
         "messages": [
@@ -111,6 +122,9 @@ def generate_image(prompt, size="512x512"):
     model = st.session_state.get('selected_image_model', 'dall-e')
     if model == 'dall-e':
         headers = get_headers('openai')
+        if not headers:
+            st.error("OpenAI API key is not set.")
+            return None
         data = {
             "prompt": prompt,
             "n": 1,
@@ -171,8 +185,11 @@ def download_image(image_url):
         return None
 
 def display_image(image_data, caption):
-    image = Image.open(BytesIO(image_data))
-    st.image(image, caption=caption, use_column_width=True)
+    try:
+        image = Image.open(BytesIO(image_data))
+        st.image(image, caption=caption, use_column_width=True)
+    except Exception as e:
+        st.error(f"Error displaying image: {e}")
 
 def generate_audio_logo(prompt):
     model = st.session_state.get('selected_music_model', 'meta-musicgen')
@@ -202,7 +219,14 @@ def create_gif(images, filter_type=None):
         if filter_type:
             pil_images = [apply_filter(img, filter_type) for img in pil_images]
         gif_buffer = BytesIO()
-        pil_images[0].save(gif_buffer, format='GIF', save_all=True, append_images=pil_images[1:], duration=1000, loop=0)
+        pil_images[0].save(
+            gif_buffer,
+            format='GIF',
+            save_all=True,
+            append_images=pil_images[1:],
+            duration=1000,
+            loop=0
+        )
         gif_buffer.seek(0)
         return gif_buffer
     except Exception as e:
@@ -210,31 +234,44 @@ def create_gif(images, filter_type=None):
         return None
 
 def apply_filter(image, filter_type):
-    if filter_type == "sepia":
-        return image.convert("L").convert("RGB")
-    elif filter_type == "greyscale":
-        return ImageOps.grayscale(image).convert("RGB")
-    elif filter_type == "negative":
-        return ImageOps.invert(image)
-    elif filter_type == "solarize":
-        return ImageOps.solarize(image, threshold=128)
-    elif filter_type == "posterize":
-        return ImageOps.posterize(image, bits=2)
-    else:
+    try:
+        if filter_type == "sepia":
+            sepia_image = ImageOps.colorize(ImageOps.grayscale(image), '#704214', '#C0A080')
+            return sepia_image
+        elif filter_type == "greyscale":
+            return ImageOps.grayscale(image).convert("RGB")
+        elif filter_type == "negative":
+            return ImageOps.invert(image)
+        elif filter_type == "solarize":
+            return ImageOps.solarize(image, threshold=128)
+        elif filter_type == "posterize":
+            return ImageOps.posterize(image, bits=2)
+        else:
+            return image
+    except Exception as e:
+        st.error(f"Error applying filter: {e}")
         return image
 
 def load_preset_bots():
     if os.path.exists('presetBots.json'):
         with open('presetBots.json') as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                st.error("Error decoding presetBots.json.")
+                return {}
     else:
+        st.warning("presetBots.json not found.")
         return {}
 
 def encode_image(image_data):
     return base64.b64encode(image_data).decode('utf-8')
 
 def describe_image(api_key, base64_image):
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
     data = {
         "model": "gpt-4-vision",
         "messages": [
@@ -279,10 +316,16 @@ def generate_file_with_gpt(prompt):
     if prompt.startswith("/image "):
         specific_prompt = prompt.replace("/image ", "").strip()
         file_name = specific_prompt.replace(" ", "_") + ".png"
-        image_url = generate_image(specific_prompt)
-        if image_url:
-            image_data = download_image(image_url)
-            return file_name, image_data
+        image_url_or_data = generate_image(specific_prompt)
+        if image_url_or_data:
+            if isinstance(image_url_or_data, bytes):
+                image_data = image_url_or_data
+            else:
+                image_data = download_image(image_url_or_data)
+            if image_data:
+                return file_name, image_data
+            else:
+                return None, None
         else:
             return None, None
 
@@ -294,6 +337,10 @@ def generate_file_with_gpt(prompt):
 
     model = st.session_state.get('selected_code_model', 'gpt-4')
     headers = get_headers('openai')
+    if not headers:
+        st.error("OpenAI API key is not set.")
+        return None, None
+
     data = {
         "model": model,
         "messages": [
@@ -313,22 +360,19 @@ def generate_file_with_gpt(prompt):
         generated_text = generated_text.strip()
         if prompt.startswith("/python "):
             start_index = generated_text.find("import")
-            generated_text = generated_text[start_index:]
+            generated_text = generated_text[start_index:] if start_index != -1 else generated_text
         elif prompt.startswith("/html "):
             start_index = generated_text.find("<!DOCTYPE html>")
-            generated_text = generated_text[start_index:]
+            generated_text = generated_text[start_index:] if start_index != -1 else generated_text
         elif prompt.startswith("/js "):
-            start_index = 0
-            generated_text = generated_text[start_index:]
+            generated_text = generated_text
         elif prompt.startswith("/md "):
-            start_index = 0
-            generated_text = generated_text[start_index:]
+            generated_text = generated_text
         elif prompt.startswith("/pdf "):
-            start_index = 0
-            generated_text = generated_text[start_index:]
+            generated_text = generated_text
         elif prompt.startswith("/doc ") or prompt.startswith("/txt "):
-            start_index = generated_text.find("\n") + 1
-            generated_text = generated_text[start_index:]
+            start_index = generated_text.find("\n")
+            generated_text = generated_text[start_index + 1:] if start_index != -1 else generated_text
 
         if generated_text.endswith("'''"):
             generated_text = generated_text[:-3].strip()
@@ -356,7 +400,9 @@ def generate_file_with_gpt(prompt):
     else:
         file_extension = ".txt"
 
-    file_name = prompt.split(" ", 1)[1].replace(" ", "_") + file_extension
+    # Ensure the file name is safe
+    base_name = prompt.split(" ", 1)[1].strip().replace(" ", "_")
+    file_name = f"{base_name}{file_extension}"
     file_data = generated_text.encode("utf-8")
 
     return file_name, file_data
@@ -387,15 +433,18 @@ def generate_music_with_replicate(prompt):
 def chat_with_gpt(prompt, uploaded_files):
     model = st.session_state.get('selected_chat_model', 'gpt-4')
     headers = get_headers('openai')
-    openai_api_key = st.session_state.api_keys.get('openai')
+    openai_api_key = st.session_state.api_keys.get("openai")
 
     if not openai_api_key:
         return "Error: OpenAI API key is not set."
 
+    if not headers:
+        return "Error: OpenAI API headers are not set."
+
     file_contents = []
     for file in uploaded_files:
-        if file in st.session_state:
-            content = st.session_state[file]
+        content = st.session_state.global_file_storage.get(file, None)
+        if content:
             if isinstance(content, bytes):
                 try:
                     content = content.decode('utf-8')
@@ -403,9 +452,11 @@ def chat_with_gpt(prompt, uploaded_files):
                     content = "Binary file content not displayable."
             file_contents.append(f"File: {file}\nContent:\n{content}\n")
         else:
-            file_contents.append(f"Content for {file} not found in session state.")
+            file_contents.append(f"Content for {file} not found in global storage.\n")
 
-    knowledge_base_contents = [f"File: {k}\nDescription:\n{v}\n" for k, v in st.session_state.get("chat_knowledge_base", {}).items()]
+    knowledge_base_contents = [
+        f"File: {k}\nDescription:\n{v}\n" for k, v in st.session_state.get("chat_knowledge_base", {}).items()
+    ]
 
     chat_history = st.session_state.get("chat_history", [])
 
@@ -440,6 +491,10 @@ def enhance_content(content, filename):
 
     model = st.session_state.get('selected_code_model', 'gpt-4')
     headers = get_headers('openai')
+    if not headers:
+        st.error("OpenAI API headers are not set.")
+        return content
+
     data = {
         "model": model,
         "messages": [
@@ -462,24 +517,31 @@ def enhance_content(content, filename):
 
 def analyze_and_store_file(file_name, file_data):
     if file_name.lower().endswith('.txt'):
-        content = file_data.decode('utf-8')
-        analyzed_content = enhance_content(content, file_name)
-        add_to_chat_knowledge_base(file_name, analyzed_content)
-        st.success(f"Analyzed and stored {file_name} in knowledge base.")
+        try:
+            content = file_data.decode('utf-8')
+            analyzed_content = enhance_content(content, file_name)
+            add_to_chat_knowledge_base(file_name, analyzed_content)
+            st.success(f"Analyzed and stored {file_name} in knowledge base.")
+        except UnicodeDecodeError:
+            st.error(f"Failed to decode {file_name}.")
     elif file_name.lower().endswith('.zip'):
-        with zipfile.ZipFile(BytesIO(file_data), 'r') as zip_ref:
-            for zip_info in zip_ref.infolist():
-                if zip_info.filename.lower().endswith('.txt'):
-                    with zip_ref.open(zip_info.filename) as f:
-                        content = f.read().decode('utf-8')
-                        analyzed_content = enhance_content(content, zip_info.filename)
-                        add_to_chat_knowledge_base(zip_info.filename, analyzed_content)
-                        st.success(f"Analyzed and stored {zip_info.filename} from {file_name} in knowledge base.")
+        try:
+            with zipfile.ZipFile(BytesIO(file_data), 'r') as zip_ref:
+                for zip_info in zip_ref.infolist():
+                    if zip_info.filename.lower().endswith('.txt'):
+                        with zip_ref.open(zip_info.filename) as f:
+                            content = f.read().decode('utf-8')
+                            analyzed_content = enhance_content(content, zip_info.filename)
+                            add_to_chat_knowledge_base(zip_info.filename, analyzed_content)
+                            st.success(f"Analyzed and stored {zip_info.filename} from {file_name} in knowledge base.")
+        except zipfile.BadZipFile:
+            st.error(f"{file_name} is not a valid zip file.")
     elif file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-        api_keys = st.session_state.api_keys
-        api_key = api_keys.get("openai")
+        api_key = st.session_state.api_keys.get("openai")
         if api_key:
             analyze_and_store_image(api_key, file_name, file_data)
+        else:
+            st.error("OpenAI API key is not set for image analysis.")
 
 def delete_all_files():
     st.session_state["global_file_storage"] = {}
@@ -519,11 +581,24 @@ def file_management_tab():
                     st.session_state[file_name] = file_data
                     add_file_to_global_storage(file_name, file_data)
                     st.success(f"Generated file: {file_name}")
+                    mime_type = "text/plain"
+                    if file_name.endswith(".py"):
+                        mime_type = "text/x-python"
+                    elif file_name.endswith(".html"):
+                        mime_type = "text/html"
+                    elif file_name.endswith(".js"):
+                        mime_type = "application/javascript"
+                    elif file_name.endswith(".md"):
+                        mime_type = "text/markdown"
+                    elif file_name.endswith(".pdf"):
+                        mime_type = "application/pdf"
+                    elif file_name.endswith(".doc"):
+                        mime_type = "application/msword"
                     st.download_button(
                         label="Download Generated File",
                         data=file_data,
                         file_name=file_name,
-                        mime="text/plain" if file_name.endswith(".txt") else None
+                        mime=mime_type
                     )
 
     files = st.session_state.get("global_file_storage", {})
@@ -547,7 +622,53 @@ def file_management_tab():
                 delete_all_files()
 
         for file_name, file_data in files.items():
-            st.write(f"{file_name}: {len(file_data)} bytes")
+            st.write(f"**{file_name}**: {len(file_data)} bytes")
+            # Optionally, provide individual download buttons
+            if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                st.image(file_data, caption=file_name, use_column_width=True)
+                st.download_button(
+                    label=f"Download {file_name}",
+                    data=file_data,
+                    file_name=file_name,
+                    mime="image/png" if file_name.lower().endswith('.png') else "image/jpeg"
+                )
+            elif file_name.lower().endswith(('.mp3', '.wav')):
+                st.audio(file_data, format="audio/mp3" if file_name.lower().endswith('.mp3') else "audio/wav")
+                st.download_button(
+                    label=f"Download {file_name}",
+                    data=file_data,
+                    file_name=file_name,
+                    mime="audio/mp3" if file_name.lower().endswith('.mp3') else "audio/wav"
+                )
+            elif file_name.lower().endswith(('.pdf', '.doc', '.txt', '.py', '.html', '.js', '.md')):
+                mime_type = "application/octet-stream"
+                if file_name.endswith(".pdf"):
+                    mime_type = "application/pdf"
+                elif file_name.endswith(".doc"):
+                    mime_type = "application/msword"
+                elif file_name.endswith(".txt"):
+                    mime_type = "text/plain"
+                elif file_name.endswith(".py"):
+                    mime_type = "text/x-python"
+                elif file_name.endswith(".html"):
+                    mime_type = "text/html"
+                elif file_name.endswith(".js"):
+                    mime_type = "application/javascript"
+                elif file_name.endswith(".md"):
+                    mime_type = "text/markdown"
+                st.download_button(
+                    label=f"Download {file_name}",
+                    data=file_data,
+                    file_name=file_name,
+                    mime=mime_type
+                )
+            else:
+                st.download_button(
+                    label=f"Download {file_name}",
+                    data=file_data,
+                    file_name=file_name,
+                    mime="application/octet-stream"
+                )
 
 # Sidebar with Tabs: API Keys and Chat
 def sidebar():
@@ -556,12 +677,42 @@ def sidebar():
 
         if tab == "🔑 API Keys":
             st.header("🔑 API Keys")
-            st.text_input("OpenAI API Key", value=st.session_state.api_keys['openai'], type="password", key="openai_api_key")
-            st.text_input("Replicate API Key", value=st.session_state.api_keys['replicate'], type="password", key="replicate_api_key")
-            st.text_input("Stability AI API Key", value=st.session_state.api_keys['stability'], type="password", key="stability_api_key")
-            st.text_input("Luma AI API Key", value=st.session_state.api_keys['luma'], type="password", key="luma_api_key")
-            st.text_input("RunwayML API Key", value=st.session_state.api_keys['runway'], type="password", key="runway_api_key")
-            st.text_input("Clipdrop API Key", value=st.session_state.api_keys['clipdrop'], type="password", key="clipdrop_api_key")
+            st.text_input(
+                "OpenAI API Key",
+                value=st.session_state.api_keys['openai'],
+                type="password",
+                key="openai_api_key"
+            )
+            st.text_input(
+                "Replicate API Key",
+                value=st.session_state.api_keys['replicate'],
+                type="password",
+                key="replicate_api_key"
+            )
+            st.text_input(
+                "Stability AI API Key",
+                value=st.session_state.api_keys['stability'],
+                type="password",
+                key="stability_api_key"
+            )
+            st.text_input(
+                "Luma AI API Key",
+                value=st.session_state.api_keys['luma'],
+                type="password",
+                key="luma_api_key"
+            )
+            st.text_input(
+                "RunwayML API Key",
+                value=st.session_state.api_keys['runway'],
+                type="password",
+                key="runway_api_key"
+            )
+            st.text_input(
+                "Clipdrop API Key",
+                value=st.session_state.api_keys['clipdrop'],
+                type="password",
+                key="clipdrop_api_key"
+            )
             if st.button("💾 Save API Keys"):
                 st.session_state.api_keys['openai'] = st.session_state.openai_api_key
                 st.session_state.api_keys['replicate'] = st.session_state.replicate_api_key
@@ -571,64 +722,90 @@ def sidebar():
                 st.session_state.api_keys['clipdrop'] = st.session_state.clipdrop_api_key
                 save_api_keys()
                 st.success("API Keys saved successfully!")
+
         elif tab == "💬 Chat":
             st.header("💬 Chat Assistant")
             # Model selection
             st.subheader("Model Selection")
-            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo", "gpt-4-32k"])
-            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion"])
-            st.session_state['selected_video_model'] = st.selectbox("Video Model", ["luma-ai"])
-            st.session_state['selected_music_model'] = st.selectbox("Music Model", ["meta-musicgen"])
-            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
+            st.session_state['selected_chat_model'] = st.selectbox(
+                "Chat Model",
+                ["gpt-4", "gpt-3.5-turbo", "gpt-4-32k"],
+                key="selected_chat_model"
+            )
+            st.session_state['selected_image_model'] = st.selectbox(
+                "Image Model",
+                ["dall-e", "stable-diffusion"],
+                key="selected_image_model"
+            )
+            st.session_state['selected_video_model'] = st.selectbox(
+                "Video Model",
+                ["luma-ai"],
+                key="selected_video_model"
+            )
+            st.session_state['selected_music_model'] = st.selectbox(
+                "Music Model",
+                ["meta-musicgen"],
+                key="selected_music_model"
+            )
+            st.session_state['selected_code_model'] = st.selectbox(
+                "Code Model",
+                ["gpt-4", "gpt-3.5-turbo"],
+                key="selected_code_model"
+            )
 
             # Chat functionality in sidebar
             use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
 
-            preset_bots = load_preset_bots() if use_personal_assistants else None
+            preset_bots = load_preset_bots() if use_personal_assistants else {}
 
             selected_bot = None
             if use_personal_assistants and preset_bots:
                 categories = list(preset_bots.keys())
-                selected_category = st.selectbox("Choose a category:", categories, key="category_select")
+                if categories:
+                    selected_category = st.selectbox("Choose a category:", categories, key="category_select")
+                    bots = preset_bots[selected_category]
+                    bot_names = [bot['name'] for bot in bots]
+                    selected_bot_name = st.selectbox("Choose a bot:", bot_names, key="bot_select")
 
-                bots = preset_bots[selected_category]
-                bot_names = [bot['name'] for bot in bots]
-                selected_bot_name = st.selectbox("Choose a bot:", bot_names, key="bot_select")
+                    selected_bot = next((bot for bot in bots if bot['name'] == selected_bot_name), None)
+                    if selected_bot:
+                        bot_description = selected_bot.get('description', '')
+                        bot_instructions = selected_bot.get('instructions', '')
 
-                selected_bot = next(bot for bot in bots if bot['name'] == selected_bot_name)
-                bot_description = selected_bot.get('description', '')
-                bot_instructions = selected_bot.get('instructions', '')
-
-                st.write(f"**{selected_bot_name}**: {bot_description}")
-                st.write(f"*Instructions*: {bot_instructions}")
+                        st.write(f"**{selected_bot_name}**: {bot_description}")
+                        st.write(f"*Instructions*: {bot_instructions}")
 
             prompt = st.text_area("Enter your prompt here...", key="chat_prompt")
 
             if st.button("Send", key="send_button"):
-                with st.spinner("Fetching response..."):
-                    all_files = get_all_global_files()
+                if prompt.strip() == "":
+                    st.warning("Please enter a prompt.")
+                else:
+                    with st.spinner("Fetching response..."):
+                        all_files = get_all_global_files()
 
-                    # Limit the number of files and their size
-                    max_files = 5
-                    max_file_size = 1024 * 1024  # 1 MB
-                    relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
-                    selected_files = list(relevant_files.keys())[:max_files]
+                        # Limit the number of files and their size
+                        max_files = 5
+                        max_file_size = 1024 * 1024  # 1 MB
+                        relevant_files = {k: v for k, v in all_files.items() if len(v) <= max_file_size}
+                        selected_files = list(relevant_files.keys())[:max_files]
 
-                    # Ensure all files in selected_files exist in session state
-                    for file in selected_files:
-                        if file not in st.session_state:
-                            st.session_state[file] = all_files[file]
+                        # Ensure all files in selected_files exist in session state
+                        for file in selected_files:
+                            if file not in st.session_state:
+                                st.session_state[file] = all_files[file]
 
-                    # Include bot instructions in the prompt if a bot is selected
-                    if selected_bot:
-                        full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
-                    else:
-                        full_prompt = prompt
+                        # Include bot instructions in the prompt if a bot is selected
+                        if selected_bot:
+                            full_prompt = f"{selected_bot['instructions']}\n\n{prompt}"
+                        else:
+                            full_prompt = prompt
 
-                    response = chat_with_gpt(full_prompt, selected_files)
-                    st.session_state.chat_history.append({"role": "user", "content": prompt})
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-                    display_chat_history()
+                        response = chat_with_gpt(full_prompt, selected_files)
+                        if response:
+                            st.session_state.chat_history.append({"role": "user", "content": prompt})
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            display_chat_history()
 
             # Display chat history
             display_chat_history()
@@ -651,7 +828,7 @@ def main_tabs():
         if st.button("Generate", key="generate_content"):
             if action == "Select an action":
                 st.warning("Please select an action.")
-            elif not prompt:
+            elif not prompt.strip():
                 st.warning("Please enter a topic or keywords.")
             else:
                 if action == "Marketing Campaign":
@@ -669,34 +846,47 @@ def main_tabs():
         if media_type == "Image Generation":
             image_prompt = st.text_area("Enter an image prompt:")
             if st.button("Generate Image"):
-                file_name = image_prompt.replace(" ", "_") + ".png"
-                image_url_or_data = generate_image(image_prompt)
-                if image_url_or_data:
-                    if isinstance(image_url_or_data, bytes):
-                        image_data = image_url_or_data
-                    else:
-                        image_data = download_image(image_url_or_data)
-                    if image_data:
-                        st.session_state.generated_images.append(image_data)
-                        display_image(image_data, "Generated Image")
-                        add_file_to_global_storage(file_name, image_data)
-                        api_key = st.session_state.api_keys.get("openai")
-                        analyze_and_store_image(api_key, file_name, image_data)
+                if image_prompt.strip() == "":
+                    st.warning("Please enter an image prompt.")
+                else:
+                    with st.spinner("Generating image..."):
+                        file_name = image_prompt.replace(" ", "_") + ".png"
+                        image_url_or_data = generate_image(image_prompt)
+                        if image_url_or_data:
+                            if isinstance(image_url_or_data, bytes):
+                                image_data = image_url_or_data
+                            else:
+                                image_data = download_image(image_url_or_data)
+                            if image_data:
+                                st.session_state.generated_images.append(image_data)
+                                display_image(image_data, "Generated Image")
+                                add_file_to_global_storage(file_name, image_data)
+                                api_key = st.session_state.api_keys.get("openai")
+                                if api_key:
+                                    analyze_and_store_image(api_key, file_name, image_data)
         elif media_type == "Video Generation":
             video_prompt = st.text_area("Enter a video prompt:")
             if st.button("Generate Video"):
-                file_name, video_data = generate_video_logo(video_prompt)
-                if video_data:
-                    st.session_state.generated_videos.append(video_data)
-                    st.video(video_data)
-                    add_file_to_global_storage(file_name, video_data)
+                if video_prompt.strip() == "":
+                    st.warning("Please enter a video prompt.")
+                else:
+                    with st.spinner("Generating video..."):
+                        file_name, video_data = generate_video_logo(video_prompt)
+                        if video_data:
+                            st.session_state.generated_videos.append(video_data)
+                            st.video(video_data)
+                            add_file_to_global_storage(file_name, video_data)
         elif media_type == "Music Generation":
             music_prompt = st.text_area("Enter a music prompt:")
             if st.button("Generate Music"):
-                file_name, music_data = generate_music_with_replicate(music_prompt)
-                if music_data:
-                    st.audio(music_data)
-                    add_file_to_global_storage(file_name, music_data)
+                if music_prompt.strip() == "":
+                    st.warning("Please enter a music prompt.")
+                else:
+                    with st.spinner("Generating music..."):
+                        file_name, music_data = generate_music_with_replicate(music_prompt)
+                        if music_data:
+                            st.audio(music_data, format="audio/mp3")
+                            add_file_to_global_storage(file_name, music_data)
 
     # Tab 3: Custom Workflows
     with tab3:
@@ -712,37 +902,39 @@ def main_tabs():
             add_step()
 
         for i, step in enumerate(st.session_state["workflow_steps"]):
-            st.write(f"Step {i + 1}")
-            step["prompt"] = st.text_input(f"Prompt for step {i + 1}", key=f"prompt_{i}")
+            st.write(f"### Step {i + 1}")
+            step["prompt"] = st.text_input(f"Prompt for step {i + 1}", value=step["prompt"], key=f"prompt_{i}")
             if st.button("Remove Step", key=f"remove_step_{i}"):
                 st.session_state["workflow_steps"].pop(i)
                 st.experimental_rerun()
 
         if st.button("Generate All Files"):
             for i, step in enumerate(st.session_state["workflow_steps"]):
-                if step["prompt"]:
-                    file_name, file_data = generate_file_with_gpt(step["prompt"])
-                    if file_name and file_data:
-                        step["file_name"] = file_name
-                        step["file_data"] = file_data
-                        st.success(f"File for step {i + 1} generated: {file_name}")
-                        add_file_to_global_storage(file_name, file_data)
+                if step["prompt"].strip():
+                    with st.spinner(f"Generating file for step {i + 1}..."):
+                        file_name, file_data = generate_file_with_gpt(step["prompt"])
+                        if file_name and file_data:
+                            step["file_name"] = file_name
+                            step["file_data"] = file_data
+                            st.success(f"File for step {i + 1} generated: {file_name}")
+                            add_file_to_global_storage(file_name, file_data)
                 else:
                     st.warning(f"Prompt for step {i + 1} is empty.")
 
         if st.button("Download Workflow Files as ZIP"):
-            zip_buffer = BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w') as zipf:
-                for step in st.session_state["workflow_steps"]:
-                    if step["file_data"]:
-                        zipf.writestr(step["file_name"], step["file_data"])
-            zip_buffer.seek(0)
-            st.download_button(
-                label="Download ZIP",
-                data=zip_buffer.getvalue(),
-                file_name="workflow_files.zip",
-                mime="application/zip"
-            )
+            with st.spinner("Creating ZIP file..."):
+                zip_buffer = BytesIO()
+                with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                    for step in st.session_state["workflow_steps"]:
+                        if step["file_data"]:
+                            zipf.writestr(step["file_name"], step["file_data"])
+                zip_buffer.seek(0)
+                st.download_button(
+                    label="Download ZIP",
+                    data=zip_buffer.getvalue(),
+                    file_name="workflow_files.zip",
+                    mime="application/zip"
+                )
 
     # Tab 4: File Management
     with tab4:
@@ -751,14 +943,22 @@ def main_tabs():
 # Generate Marketing Campaign Function
 def generate_marketing_campaign(prompt):
     st.info("Generating campaign concept...")
-    campaign_concept = generate_content(f"Create a detailed marketing campaign concept based on the following prompt: {prompt}.", "marketing")
-    st.session_state.campaign_plan['campaign_concept'] = campaign_concept
-    add_file_to_global_storage("campaign_concept.txt", campaign_concept)
+    campaign_concept = generate_content(
+        f"Create a detailed marketing campaign concept based on the following prompt: {prompt}.",
+        "marketing"
+    )
+    if campaign_concept:
+        st.session_state.campaign_plan['campaign_concept'] = campaign_concept
+        add_file_to_global_storage("campaign_concept.txt", campaign_concept.encode("utf-8"))
 
     st.info("Generating marketing plan...")
-    marketing_plan = generate_content(f"Create a detailed marketing plan for the campaign: {campaign_concept}", "marketing")
-    st.session_state.campaign_plan['marketing_plan'] = marketing_plan
-    add_file_to_global_storage("marketing_plan.txt", marketing_plan)
+    marketing_plan = generate_content(
+        f"Create a detailed marketing plan for the campaign: {campaign_concept}",
+        "marketing"
+    )
+    if marketing_plan:
+        st.session_state.campaign_plan['marketing_plan'] = marketing_plan
+        add_file_to_global_storage("marketing_plan.txt", marketing_plan.encode("utf-8"))
 
     st.info("Generating images...")
     images = {}
@@ -785,34 +985,46 @@ def generate_marketing_campaign(prompt):
     st.session_state.campaign_plan['images'] = images
 
     st.info("Generating resources and tips...")
-    resources_tips = generate_content(f"List resources and tips for executing the marketing campaign: {campaign_concept}", "marketing")
-    st.session_state.campaign_plan['resources_tips'] = resources_tips
-    add_file_to_global_storage("resources_tips.txt", resources_tips)
+    resources_tips = generate_content(
+        f"List resources and tips for executing the marketing campaign: {campaign_concept}",
+        "marketing"
+    )
+    if resources_tips:
+        st.session_state.campaign_plan['resources_tips'] = resources_tips
+        add_file_to_global_storage("resources_tips.txt", resources_tips.encode("utf-8"))
 
     st.info("Generating recap...")
-    recap = generate_content(f"Recap the marketing campaign: {campaign_concept}", "marketing")
-    st.session_state.campaign_plan['recap'] = recap
-    add_file_to_global_storage("recap.txt", recap)
+    recap = generate_content(
+        f"Recap the marketing campaign: {campaign_concept}",
+        "marketing"
+    )
+    if recap:
+        st.session_state.campaign_plan['recap'] = recap
+        add_file_to_global_storage("recap.txt", recap.encode("utf-8"))
 
     st.info("Generating master document...")
     master_doc = create_master_document(st.session_state.campaign_plan)
     st.session_state.campaign_plan['master_document'] = master_doc
-    add_file_to_global_storage("master_document.txt", master_doc)
+    add_file_to_global_storage("master_document.txt", master_doc.encode("utf-8"))
 
     st.success("Marketing Campaign Generated!")
-    st.download_button(
-        label="Download Campaign ZIP",
-        data=create_zip(st.session_state.campaign_plan).getvalue(),
-        file_name="marketing_campaign.zip",
-        mime="application/zip"
-    )
+    with st.spinner("Creating ZIP file..."):
+        zip_buffer = create_zip(st.session_state.campaign_plan)
+        st.download_button(
+            label="Download Campaign ZIP",
+            data=zip_buffer.getvalue(),
+            file_name="marketing_campaign.zip",
+            mime="application/zip"
+        )
 
 def create_master_document(content_dict):
     master_doc = ""
-    for key in content_dict.keys():
+    for key, value in content_dict.items():
         if key == "images":
             continue
-        master_doc += f"{key.replace('_', ' ').capitalize()}:\n{content_dict[key]}\n\n"
+        if isinstance(value, dict):
+            continue  # Skip dictionaries like 'images'
+        master_doc += f"{key.replace('_', ' ').capitalize()}:\n{value}\n\n"
     return master_doc
 
 def create_zip(content_dict):
