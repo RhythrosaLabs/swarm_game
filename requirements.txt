@@ -3,3 +3,6 @@ requests
 pillow
 replicate
 openai
+fpdf
+gtts
+moviepy
