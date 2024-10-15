@@ -3,16 +3,12 @@ import requests
 import json
 import os
 import zipfile
-import time
 from io import BytesIO
 from PIL import Image, ImageOps
-import replicate
 import base64
 import numpy as np
-import pandas as pd
-from fpdf import FPDF
-from gtts import gTTS
 import threading
+import torch
 
 # Set page configuration
 st.set_page_config(page_title="B35 - Super-Powered Automation App", layout="wide", page_icon="🚀")
@@ -124,7 +120,7 @@ def generate_image(prompt, size="512x512"):
             image_url = response_data['data'][0]['url']
             return image_url
         except Exception as e:
-            st.error(f"Error generating image: {e}")
+            st.error(f"Error generating image with DALL·E: {e}")
             return None
     elif model == 'stable-diffusion':
         stability_api_key = st.session_state.api_keys.get('stability')
@@ -161,28 +157,7 @@ def generate_image_with_stability(prompt, size):
         st.error(f"Error generating image with Stability AI: {e}")
         return None
 
-def download_image(image_url):
-    try:
-        response = requests.get(image_url)
-        response.raise_for_status()
-        return response.content
-    except Exception as e:
-        st.error(f"Error downloading image: {e}")
-        return None
-
-def display_image(image_data, caption):
-    image = Image.open(BytesIO(image_data))
-    st.image(image, caption=caption, use_column_width=True)
-
-def generate_audio_logo(prompt):
-    model = st.session_state.get('selected_music_model', 'meta-musicgen')
-    if model == 'meta-musicgen':
-        return generate_music_with_replicate(prompt)
-    else:
-        st.error("Selected music model is not supported yet.")
-        return None, None
-
-def generate_video_logo(prompt):
+def generate_video(prompt):
     model = st.session_state.get('selected_video_model', 'luma-ai')
     if model == 'luma-ai':
         luma_api_key = st.session_state.api_keys.get('luma')
@@ -192,68 +167,77 @@ def generate_video_logo(prompt):
         # Placeholder for Luma AI video generation
         st.info("Luma AI video generation is not yet implemented.")
         return None, None
+    elif model == 'stable-diffusion':
+        # Implement text-to-video using Stable Diffusion
+        st.info("Stable Diffusion text-to-video generation is not yet implemented.")
+        return None, None
     else:
         st.error("Selected video model is not supported yet.")
         return None, None
 
-def create_gif(images, filter_type=None):
+def display_image(image_data, caption):
+    image = Image.open(BytesIO(image_data))
+    st.image(image, caption=caption, use_column_width=True)
+
+def generate_audio(prompt):
+    model = st.session_state.get('selected_music_model', 'meta-musicgen')
+    if model == 'meta-musicgen':
+        return generate_music_with_replicate(prompt)
+    else:
+        st.error("Selected music model is not supported yet.")
+        return None, None
+
+def generate_music_with_replicate(prompt):
+    replicate_api_key = st.session_state.api_keys.get("replicate")
+    if not replicate_api_key:
+        st.error("Replicate API key is not set.")
+        return None, None
     try:
-        pil_images = [Image.open(BytesIO(img)) for img in images]
-        if filter_type:
-            pil_images = [apply_filter(img, filter_type) for img in pil_images]
-        gif_buffer = BytesIO()
-        pil_images[0].save(gif_buffer, format='GIF', save_all=True, append_images=pil_images[1:], duration=1000, loop=0)
-        gif_buffer.seek(0)
-        return gif_buffer
+        import replicate
+        client = replicate.Client(api_token=replicate_api_key)
+        model = client.models.get("facebook/MusicGen")
+        version = model.versions.get("80de8355fb1f600b97e687d9b0adf2a858e9799ed6c78ba77883d4680e3a9111")
+        inputs = {
+            'description': prompt,
+            'duration': 10,  # seconds
+        }
+        output_url = version.predict(**inputs)
+        music_data = requests.get(output_url).content
+        file_name = prompt.replace(" ", "_") + ".mp3"
+        return file_name, music_data
     except Exception as e:
-        st.error(f"Error creating GIF: {e}")
-        return None
-
-def apply_filter(image, filter_type):
-    if filter_type == "sepia":
-        return image.convert("L").convert("RGB")
-    elif filter_type == "greyscale":
-        return ImageOps.grayscale(image).convert("RGB")
-    elif filter_type == "negative":
-        return ImageOps.invert(image)
-    elif filter_type == "solarize":
-        return ImageOps.solarize(image, threshold=128)
-    elif filter_type == "posterize":
-        return ImageOps.posterize(image, bits=2)
-    else:
-        return image
-
-def load_preset_bots():
-    if os.path.exists('presetBots.json'):
-        with open('presetBots.json') as f:
-            return json.load(f)
-    else:
-        return {}
+        st.error(f"Error generating music: {e}")
+        return None, None
 
 def encode_image(image_data):
     return base64.b64encode(image_data).decode('utf-8')
 
-def describe_image(api_key, base64_image):
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+def describe_image(api_key, image_data):
+    # Using OpenAI GPT-4 with image analysis capabilities
+    headers = get_headers('openai')
+    files = {
+        'file': ('image.png', image_data, 'application/octet-stream')
+    }
     data = {
         "model": "gpt-4-vision",
         "messages": [
-            {"role": "user", "content": f"Describe the following image: data:image/jpeg;base64,{base64_image}"}
+            {"role": "user", "content": "Describe the content of this image."}
         ]
     }
     try:
-        response = requests.post(CHAT_API_URL, headers=headers, json=data)
+        response = requests.post(CHAT_API_URL, headers=headers, files=files, data={'data': json.dumps(data)})
         if response.status_code == 200 and 'choices' in response.json():
             description = response.json()['choices'][0]['message']['content']
             return description
         else:
-            return "Failed to analyze the image."
+            st.error(f"Failed to analyze the image. Response: {response.text}")
+            return None
     except Exception as e:
-        return f"An error occurred: {e}"
+        st.error(f"An error occurred during image analysis: {e}")
+        return None
 
 def analyze_and_store_image(api_key, file_name, file_data):
-    base64_image = encode_image(file_data)
-    description = describe_image(api_key, base64_image)
+    description = describe_image(api_key, file_data)
     if description:
         add_to_chat_knowledge_base(file_name, description)
         st.success(f"Image {file_name} analyzed and stored in knowledge base.")
@@ -263,44 +247,46 @@ def analyze_and_store_image(api_key, file_name, file_data):
 def generate_file_with_gpt(prompt):
     api_keys = st.session_state.api_keys
     openai_api_key = api_keys.get("openai")
-    replicate_api_key = api_keys.get("replicate")
 
     if not openai_api_key:
-        st.error("OpenAI API key is not set. Please add it in the sidebar.")
+        st.error("OpenAI API key is not set. Please add it in the API Keys tab.")
         return None, None
 
-    if prompt.startswith("/music "):
-        if not replicate_api_key:
-            st.error("Replicate API key is not set. Please add it in the sidebar.")
-            return None, None
-        specific_prompt = prompt.replace("/music ", "").strip()
-        return generate_music_with_replicate(specific_prompt)
+    specific_prompt = prompt.strip()
 
-    if prompt.startswith("/image "):
-        specific_prompt = prompt.replace("/image ", "").strip()
-        file_name = specific_prompt.replace(" ", "_") + ".png"
-        image_url = generate_image(specific_prompt)
-        if image_url:
-            image_data = download_image(image_url)
-            return file_name, image_data
-        else:
-            return None, None
+    # Identify file type based on prompt
+    if prompt.startswith("/python "):
+        file_extension = ".py"
+        specific_prompt = prompt.replace("/python ", "").strip()
+    elif prompt.startswith("/html "):
+        file_extension = ".html"
+        specific_prompt = prompt.replace("/html ", "").strip()
+    elif prompt.startswith("/js "):
+        file_extension = ".js"
+        specific_prompt = prompt.replace("/js ", "").strip()
+    elif prompt.startswith("/md "):
+        file_extension = ".md"
+        specific_prompt = prompt.replace("/md ", "").strip()
+    elif prompt.startswith("/txt "):
+        file_extension = ".txt"
+        specific_prompt = prompt.replace("/txt ", "").strip()
+    elif prompt.startswith("/pdf "):
+        file_extension = ".pdf"
+        specific_prompt = prompt.replace("/pdf ", "").strip()
+    else:
+        file_extension = ".txt"
 
-    if prompt.startswith("/video "):
-        specific_prompt = prompt.replace("/video ", "").strip()
-        return generate_video_logo(specific_prompt)
-
-    specific_prompt = f"Please generate the following file content without any explanations or additional text:\n{prompt}"
+    # Prepare the prompt for the model
+    model_prompt = f"Generate a {file_extension} file with the following content:\n{specific_prompt}"
 
     model = st.session_state.get('selected_code_model', 'gpt-4')
     headers = get_headers('openai')
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": specific_prompt}
+            {"role": "user", "content": model_prompt}
         ],
-        "max_tokens": 1000,
+        "max_tokens": 2000,
         "temperature": 0.7
     }
 
@@ -308,129 +294,40 @@ def generate_file_with_gpt(prompt):
         response = requests.post(CHAT_API_URL, headers=headers, json=data)
         response.raise_for_status()
         response_data = response.json()
-        generated_text = response_data['choices'][0]['message']['content']
+        generated_content = response_data['choices'][0]['message']['content']
 
-        generated_text = generated_text.strip()
-        if prompt.startswith("/python "):
-            start_index = generated_text.find("import")
-            generated_text = generated_text[start_index:]
-        elif prompt.startswith("/html "):
-            start_index = generated_text.find("<!DOCTYPE html>")
-            generated_text = generated_text[start_index:]
-        elif prompt.startswith("/js "):
-            start_index = 0
-            generated_text = generated_text[start_index:]
-        elif prompt.startswith("/md "):
-            start_index = 0
-            generated_text = generated_text[start_index:]
-        elif prompt.startswith("/pdf "):
-            start_index = 0
-            generated_text = generated_text[start_index:]
-        elif prompt.startswith("/doc ") or prompt.startswith("/txt "):
-            start_index = generated_text.find("\n") + 1
-            generated_text = generated_text[start_index:]
+        # Remove any code blocks or markdown formatting
+        if generated_content.startswith("```"):
+            generated_content = generated_content.strip("```").strip()
 
-        if generated_text.endswith("'''"):
-            generated_text = generated_text[:-3].strip()
-        elif generated_text.endswith("```"):
-            generated_text = generated_text[:-3].strip()
+        file_name = specific_prompt[:50].replace(" ", "_") + file_extension
+        file_data = generated_content.encode("utf-8")
 
-    except requests.RequestException as e:
+        return file_name, file_data
+    except Exception as e:
         st.error(f"Error generating file: {e}")
         return None, None
 
-    if prompt.startswith("/python "):
-        file_extension = ".py"
-    elif prompt.startswith("/html "):
-        file_extension = ".html"
-    elif prompt.startswith("/js "):
-        file_extension = ".js"
-    elif prompt.startswith("/md "):
-        file_extension = ".md"
-    elif prompt.startswith("/pdf "):
-        file_extension = ".pdf"
-    elif prompt.startswith("/doc "):
-        file_extension = ".doc"
-    elif prompt.startswith("/txt "):
-        file_extension = ".txt"
-    else:
-        file_extension = ".txt"
-
-    file_name = prompt.split(" ", 1)[1].replace(" ", "_") + file_extension
-    file_data = generated_text.encode("utf-8")
-
-    return file_name, file_data
-
-def generate_music_with_replicate(prompt):
-    replicate_api_key = st.session_state.api_keys.get("replicate")
-    if not replicate_api_key:
-        st.error("Replicate API key is not set.")
-        return None, None
-    model = st.session_state.get('selected_music_model', 'meta-musicgen')
-    if model == 'meta-musicgen':
-        try:
-            client = replicate.Client(api_token=replicate_api_key)
-            output_url = client.run(
-                "facebook/MusicGen",
-                input={"text": prompt}
-            )
-            music_data = requests.get(output_url).content
-            file_name = prompt.replace(" ", "_") + ".mp3"
-            return file_name, music_data
-        except Exception as e:
-            st.error(f"Error generating music: {e}")
-            return None, None
-    else:
-        st.error("Selected music model is not supported yet.")
-        return None, None
-
-def chat_with_gpt(prompt, uploaded_files):
-    model = st.session_state.get('selected_chat_model', 'gpt-4')
-    headers = get_headers('openai')
-    openai_api_key = st.session_state.api_keys.get('openai')
-
-    if not openai_api_key:
-        return "Error: OpenAI API key is not set."
-
-    file_contents = []
-    for file in uploaded_files:
-        if file in st.session_state:
-            content = st.session_state[file]
-            if isinstance(content, bytes):
-                try:
-                    content = content.decode('utf-8')
-                except UnicodeDecodeError:
-                    content = "Binary file content not displayable."
-            file_contents.append(f"File: {file}\nContent:\n{content}\n")
-        else:
-            file_contents.append(f"Content for {file} not found in session state.")
-
-    knowledge_base_contents = [f"File: {k}\nDescription:\n{v}\n" for k, v in st.session_state.get("chat_knowledge_base", {}).items()]
-
-    chat_history = st.session_state.get("chat_history", [])
-
-    data = {
-        "model": model,
-        "messages": chat_history + [
-            {"role": "user", "content": f"{prompt}\n\nFiles:\n{''.join(file_contents)}\n\nKnowledge Base:\n{''.join(knowledge_base_contents)}"}
-        ]
-    }
-
-    try:
-        response = requests.post(CHAT_API_URL, headers=headers, json=data)
-        response.raise_for_status()
-        response_data = response.json()
-        assistant_reply = response_data["choices"][0]["message"]["content"]
-
-        # Save chat history
-        chat_history.append({"role": "user", "content": prompt})
-        chat_history.append({"role": "assistant", "content": assistant_reply})
-        st.session_state["chat_history"] = chat_history
-
-        return assistant_reply
-    except Exception as e:
-        st.error(f"Error in chat: {e}")
-        return "I'm sorry, I couldn't process your request."
+def analyze_and_store_file(file_name, file_data):
+    if file_name.lower().endswith('.txt') or file_name.lower().endswith('.py') or file_name.lower().endswith('.html') or file_name.lower().endswith('.md'):
+        content = file_data.decode('utf-8')
+        analyzed_content = enhance_content(content, file_name)
+        add_to_chat_knowledge_base(file_name, analyzed_content)
+        st.success(f"Analyzed and stored {file_name} in knowledge base.")
+    elif file_name.lower().endswith('.zip'):
+        with zipfile.ZipFile(BytesIO(file_data), 'r') as zip_ref:
+            for zip_info in zip_ref.infolist():
+                if zip_info.filename.lower().endswith(('.txt', '.py', '.html', '.md')):
+                    with zip_ref.open(zip_info.filename) as f:
+                        content = f.read().decode('utf-8')
+                        analyzed_content = enhance_content(content, zip_info.filename)
+                        add_to_chat_knowledge_base(zip_info.filename, analyzed_content)
+                        st.success(f"Analyzed and stored {zip_info.filename} from {file_name} in knowledge base.")
+    elif file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+        api_keys = st.session_state.api_keys
+        api_key = api_keys.get("openai")
+        if api_key:
+            analyze_and_store_image(api_key, file_name, file_data)
 
 def enhance_content(content, filename):
     api_key = st.session_state.api_keys.get('openai')
@@ -443,7 +340,7 @@ def enhance_content(content, filename):
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": f"Enhance the following content from {filename}."},
+            {"role": "system", "content": f"Enhance the following content from {filename} and provide a summary."},
             {"role": "user", "content": content}
         ],
         "max_tokens": 1500,
@@ -459,27 +356,6 @@ def enhance_content(content, filename):
     except Exception as e:
         st.error(f"Error enhancing content: {e}")
         return content
-
-def analyze_and_store_file(file_name, file_data):
-    if file_name.lower().endswith('.txt'):
-        content = file_data.decode('utf-8')
-        analyzed_content = enhance_content(content, file_name)
-        add_to_chat_knowledge_base(file_name, analyzed_content)
-        st.success(f"Analyzed and stored {file_name} in knowledge base.")
-    elif file_name.lower().endswith('.zip'):
-        with zipfile.ZipFile(BytesIO(file_data), 'r') as zip_ref:
-            for zip_info in zip_ref.infolist():
-                if zip_info.filename.lower().endswith('.txt'):
-                    with zip_ref.open(zip_info.filename) as f:
-                        content = f.read().decode('utf-8')
-                        analyzed_content = enhance_content(content, zip_info.filename)
-                        add_to_chat_knowledge_base(zip_info.filename, analyzed_content)
-                        st.success(f"Analyzed and stored {zip_info.filename} from {file_name} in knowledge base.")
-    elif file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-        api_keys = st.session_state.api_keys
-        api_key = api_keys.get("openai")
-        if api_key:
-            analyze_and_store_image(api_key, file_name, file_data)
 
 def delete_all_files():
     st.session_state["global_file_storage"] = {}
@@ -510,7 +386,7 @@ def file_management_tab():
 
     # Add text field and button for generating files using GPT-4
     st.subheader("Generate File")
-    generation_prompt = st.text_input("Enter prompt to generate file:")
+    generation_prompt = st.text_input("Enter prompt to generate file (e.g., '/python Generate a script that says hello world'):")
     if st.button("Generate File"):
         if generation_prompt:
             with st.spinner("Generating file..."):
@@ -575,11 +451,11 @@ def sidebar():
             st.header("💬 Chat Assistant")
             # Model selection
             st.subheader("Model Selection")
-            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo", "gpt-4-32k"])
-            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion"])
-            st.session_state['selected_video_model'] = st.selectbox("Video Model", ["luma-ai"])
+            st.session_state['selected_chat_model'] = st.selectbox("Chat Model", ["gpt-4", "gpt-3.5-turbo", "gpt-4-32k", "llama"])
+            st.session_state['selected_image_model'] = st.selectbox("Image Model", ["dall-e", "stable-diffusion", "flux"])
+            st.session_state['selected_video_model'] = st.selectbox("Video Model", ["luma-ai", "stable-diffusion"])
             st.session_state['selected_music_model'] = st.selectbox("Music Model", ["meta-musicgen"])
-            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo"])
+            st.session_state['selected_code_model'] = st.selectbox("Code Model", ["gpt-4", "gpt-3.5-turbo", "llama"])
 
             # Chat functionality in sidebar
             use_personal_assistants = st.checkbox("Use Personal Assistants", key="use_personal_assistants")
@@ -633,6 +509,54 @@ def sidebar():
             # Display chat history
             display_chat_history()
 
+def chat_with_gpt(prompt, uploaded_files):
+    model = st.session_state.get('selected_chat_model', 'gpt-4')
+    headers = get_headers('openai')
+    openai_api_key = st.session_state.api_keys.get('openai')
+
+    if not openai_api_key:
+        return "Error: OpenAI API key is not set."
+
+    file_contents = []
+    for file in uploaded_files:
+        if file in st.session_state:
+            content = st.session_state[file]
+            if isinstance(content, bytes):
+                try:
+                    content = content.decode('utf-8')
+                except UnicodeDecodeError:
+                    content = "Binary file content not displayable."
+            file_contents.append(f"File: {file}\nContent:\n{content}\n")
+        else:
+            file_contents.append(f"Content for {file} not found in session state.")
+
+    knowledge_base_contents = [f"File: {k}\nDescription:\n{v}\n" for k, v in st.session_state.get("chat_knowledge_base", {}).items()]
+
+    chat_history = st.session_state.get("chat_history", [])
+
+    data = {
+        "model": model,
+        "messages": chat_history + [
+            {"role": "user", "content": f"{prompt}\n\nFiles:\n{''.join(file_contents)}\n\nKnowledge Base:\n{''.join(knowledge_base_contents)}"}
+        ]
+    }
+
+    try:
+        response = requests.post(CHAT_API_URL, headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        assistant_reply = response_data["choices"][0]["message"]["content"]
+
+        # Save chat history
+        chat_history.append({"role": "user", "content": prompt})
+        chat_history.append({"role": "assistant", "content": assistant_reply})
+        st.session_state["chat_history"] = chat_history
+
+        return assistant_reply
+    except Exception as e:
+        st.error(f"Error in chat: {e}")
+        return "I'm sorry, I couldn't process your request."
+
 # Main Tabs
 def main_tabs():
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -685,7 +609,7 @@ def main_tabs():
         elif media_type == "Video Generation":
             video_prompt = st.text_area("Enter a video prompt:")
             if st.button("Generate Video"):
-                file_name, video_data = generate_video_logo(video_prompt)
+                file_name, video_data = generate_video(video_prompt)
                 if video_data:
                     st.session_state.generated_videos.append(video_data)
                     st.video(video_data)
@@ -693,7 +617,7 @@ def main_tabs():
         elif media_type == "Music Generation":
             music_prompt = st.text_area("Enter a music prompt:")
             if st.button("Generate Music"):
-                file_name, music_data = generate_music_with_replicate(music_prompt)
+                file_name, music_data = generate_audio(music_prompt)
                 if music_data:
                     st.audio(music_data)
                     add_file_to_global_storage(file_name, music_data)
@@ -831,6 +755,14 @@ def create_zip(content_dict):
                         zip_file.writestr(f"{key}/{sub_key}", sub_value)
     zip_buffer.seek(0)
     return zip_buffer
+
+# Load preset bots
+def load_preset_bots():
+    if os.path.exists('presetBots.json'):
+        with open('presetBots.json') as f:
+            return json.load(f)
+    else:
+        return {}
 
 # Main function
 def main():
