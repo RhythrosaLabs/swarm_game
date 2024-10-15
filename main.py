@@ -856,6 +856,7 @@ def sidebar_menu():
             display_chat_history()
 
 
+
 def chat_with_gpt(prompt):
     """Handle chat interactions with GPT-4o."""
     api_key = st.session_state.api_keys.get("openai")
