@@ -23,7 +23,6 @@ python-docx
 reportlab
 xlsxwriter
 tqdm
-stability-sdk
 midiutil
 pygame
 streamlit-quill
