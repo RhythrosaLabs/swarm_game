@@ -698,30 +698,7 @@ def sidebar_menu():
     """Configure the sidebar with four tabs: Keys, Models, About, Chat."""
     
     # Ensure session state keys are initialized before using them
-    if 'api_keys' not in st.session_state:
-        st.session_state.api_keys = {
-            'openai': '',
-            'replicate': '',
-            'stability': '',
-            'luma': '',
-            'runway': '',
-            'clipdrop': ''
-        }
-    
-    if 'selected_code_model' not in st.session_state:
-        st.session_state['selected_code_model'] = 'gpt-4o'
-    
-    if 'selected_image_model' not in st.session_state:
-        st.session_state['selected_image_model'] = 'dalle3'
-    
-    if 'selected_video_model' not in st.session_state:
-        st.session_state['selected_video_model'] = 'stable diffusion'
-    
-    if 'selected_audio_model' not in st.session_state:
-        st.session_state['selected_audio_model'] = 'music gen'
-    
-    if 'chat_history' not in st.session_state:
-        st.session_state['chat_history'] = []
+    initialize_session_state()
 
     # Sidebar layout
     with st.sidebar:
@@ -784,33 +761,38 @@ def sidebar_menu():
 
         elif selected == "🛠️ Models":
             st.header("🛠️ Models Selection")
+            
+            # Set selected models via the widget itself
             st.subheader("Code Models")
-            # No need to set st.session_state['selected_code_model'] explicitly
-            st.selectbox(
+            st.session_state['selected_code_model'] = st.selectbox(
                 "Select Code Model",
                 ["gpt-4o", "gpt-4", "llama"],
-                key="selected_code_model"  # Session state key for automatic binding
+                index=["gpt-4o", "gpt-4", "llama"].index(st.session_state['selected_code_model']),
+                key="selected_code_model"
             )
 
             st.subheader("Image Models")
-            st.selectbox(
+            st.session_state['selected_image_model'] = st.selectbox(
                 "Select Image Model",
                 ["dalle3", "stable diffusion", "flux"],
-                key="selected_image_model"  # Session state key for automatic binding
+                index=["dalle3", "stable diffusion", "flux"].index(st.session_state['selected_image_model']),
+                key="selected_image_model"
             )
 
             st.subheader("Video Models")
-            st.selectbox(
+            st.session_state['selected_video_model'] = st.selectbox(
                 "Select Video Model",
                 ["stable diffusion", "luma"],
-                key="selected_video_model"  # Session state key for automatic binding
+                index=["stable diffusion", "luma"].index(st.session_state['selected_video_model']),
+                key="selected_video_model"
             )
 
             st.subheader("Audio Models")
-            st.selectbox(
+            st.session_state['selected_audio_model'] = st.selectbox(
                 "Select Audio Model",
                 ["music gen"],
-                key="selected_audio_model"  # Session state key for automatic binding
+                index=["music gen"].index(st.session_state['selected_audio_model']),
+                key="selected_audio_model"
             )
 
             st.success("Model selections updated.")
@@ -853,6 +835,41 @@ def sidebar_menu():
             display_chat_history()
 
 
+# Initialize session state for default values
+def initialize_session_state():
+    if 'api_keys' not in st.session_state:
+        st.session_state.api_keys = {
+            'openai': '',
+            'replicate': '',
+            'stability': '',
+            'luma': '',
+            'runway': '',
+            'clipdrop': ''
+        }
+    if 'selected_code_model' not in st.session_state:
+        st.session_state['selected_code_model'] = 'gpt-4o'
+    if 'selected_image_model' not in st.session_state:
+        st.session_state['selected_image_model'] = 'dalle3'
+    if 'selected_video_model' not in st.session_state:
+        st.session_state['selected_video_model'] = 'stable diffusion'
+    if 'selected_audio_model' not in st.session_state:
+        st.session_state['selected_audio_model'] = 'music gen'
+    if 'chat_history' not in st.session_state:
+        st.session_state['chat_history'] = []
+
+# Helper function for chat with GPT
+def chat_with_gpt(prompt):
+    # Placeholder function for GPT-4o API integration
+    return f"Response to: {prompt}"
+
+# Display chat history
+def display_chat_history():
+    for entry in st.session_state.get('chat_history', []):
+        st.write(f"{entry['role']}: {entry['content']}")
+
+
+# Call the sidebar menu function
+sidebar_menu()
 
 
 def chat_with_gpt(prompt):
