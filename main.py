@@ -1,5 +1,4 @@
 import streamlit as st
-import openai
 import replicate
 import requests
 from PIL import Image
